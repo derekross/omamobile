@@ -214,8 +214,7 @@ function themeName(name) {
 // The Mobile data tile's icon: signal bars from tile-state.sh's data_signal
 // (0-100 while registered, -1 or missing with no network), the same glyphs
 // as the bar's StatusModel.cellularIcon, where 0 is the empty bars
-// (registered, no reading yet). Crossed out only with no modem, mobile data
-// off, or no network.
+// (registered, no reading yet). No crossed-out symbol: see dataIcon.
 function dataSignal(value) {
   var text = String(value === undefined || value === null ? "" : value).trim()
   if (!/^-?[0-9]+$/.test(text)) return -1
@@ -225,9 +224,12 @@ function dataSignal(value) {
 
 function dataIcon(available, enabled, signal) {
   var strength = dataSignal(signal)
-  if (!available || !enabled || strength < 0) return String.fromCodePoint(0xF0783)
-  var bars = [0xF08BF, 0xF08BC, 0xF08BD, 0xF08BE]
-  return String.fromCodePoint(bars[Math.max(0, Math.min(3, Math.floor(strength / 25.01)))])
+  // The bar's three cellular symbols and no others (StatusModel.js): the empty
+  // bars with no modem or no signal, else the filled bars. Data off has no
+  // symbol of its own: the tile's own off state says it.
+  // "cell-bars:N" is the four drawn bars, N filled (omamobile.bar/CellBars.qml).
+  if (!available || !(strength > 0)) return "cell-bars:0"
+  return "cell-bars:" + Math.min(4, Math.floor(strength / 25) + 1)
 }
 
 if (typeof module !== "undefined") {

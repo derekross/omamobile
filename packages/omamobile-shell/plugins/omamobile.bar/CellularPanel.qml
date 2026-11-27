@@ -252,8 +252,18 @@ Panel {
           Text {
             id: heroIcon
             textFormat: Text.PlainText
-            text: root.glyph
-            color: root.bar.foreground
+            // The bars are drawn (CellBars.qml, the font has no four-bar set); a
+            // transparent glyph keeps the slot's size.
+            readonly property bool cellBars: root.glyph.indexOf("cell-bars:") === 0
+            text: cellBars ? String.fromCodePoint(0xF001D) : root.glyph
+            color: cellBars ? "transparent" : root.bar.foreground
+            CellBars {
+              anchors.centerIn: parent
+              visible: parent.cellBars
+              level: parent.cellBars ? (parseInt(root.glyph.slice(10), 10) || 0) : 0
+              color: root.bar.foreground
+              size: parent.font.pixelSize * 0.74
+            }
             opacity: root.registered && root.dataOn ? 1.0 : 0.5
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.display
