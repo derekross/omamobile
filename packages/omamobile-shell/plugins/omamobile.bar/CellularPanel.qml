@@ -75,10 +75,10 @@ Panel {
   readonly property string carrierScript: String(Qt.resolvedUrl("carrier-name.py")).replace(/^file:\/\//, "")
 
   function title() {
-    if (!present) return "Mobile Network"
+    if (!present) return "Cellular Network"
     if (modem.operator_name) return modem.operator_name
     if (lookedUpName && lookedUpCode === modem.plmn) return lookedUpName
-    return "Mobile Network"
+    return "Cellular Network"
   }
 
   onModemChanged: {
@@ -111,7 +111,7 @@ Panel {
     if (radioBusy && radioWant) return "Searching"
     if (!registered) return "Searching"
     // As Omarchy's Wi-Fi card says "Not connected" with its switch off.
-    if (!dataOn) return modem.registration === "roaming" ? "Roaming · mobile data off" : "Mobile data off"
+    if (!dataOn) return modem.registration === "roaming" ? "Roaming · cellular data off" : "Cellular data off"
     return modem.registration === "roaming" ? "Roaming" : "Connected"
   }
 
@@ -369,7 +369,7 @@ Panel {
 
           InfoLabel { text: "Texts" }
           DetailValue { text: root.yesNo(modem.sms) }
-          InfoLabel { text: "Mobile data" }
+          InfoLabel { text: "Cellular data" }
           DetailValue { text: root.dataOn ? (modem.data ? "On" : "Connecting") : "Off" }
 
           InfoLabel { text: Commons.I18n.t("network.ping") }
