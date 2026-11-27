@@ -70,7 +70,6 @@ Panel {
     var p = Number(link.ping)
     pingSamples = pingSamples.concat([p >= 0 ? p : null]).slice(-24)
   }
-  onOpenedChanged: if (!opened) { lastSample = null; downloadRate = 0; uploadRate = 0; pingSamples = [] }
   readonly property bool linkUp: !!link && !!link.iface
   readonly property string statsScript: String(Qt.resolvedUrl("cell-stats.sh")).replace(/^file:\/\//, "")
   readonly property string carrierScript: String(Qt.resolvedUrl("carrier-name.py")).replace(/^file:\/\//, "")
@@ -129,7 +128,10 @@ Panel {
     radioSet.running = true
   }
 
-  onOpenedChanged: if (opened) refresh()
+  onOpenedChanged: {
+    if (opened) { refresh(); return }
+    lastSample = null; downloadRate = 0; uploadRate = 0; pingSamples = []
+  }
 
   Process {
     id: stateFile
