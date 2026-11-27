@@ -75,10 +75,10 @@ Panel {
   readonly property string carrierScript: String(Qt.resolvedUrl("carrier-name.py")).replace(/^file:\/\//, "")
 
   function title() {
-    if (!present) return "Mobile network"
+    if (!present) return "Mobile Network"
     if (modem.operator_name) return modem.operator_name
     if (lookedUpName && lookedUpCode === modem.plmn) return lookedUpName
-    return "Mobile network"
+    return "Mobile Network"
   }
 
   onModemChanged: {
@@ -104,7 +104,11 @@ Panel {
     var sim = modem.sim || {}
     if (sim.state === "absent") return "No SIM"
     if (sim.state === "locked" || sim.state === "pin") return "SIM locked"
-    if (radioOff) return "Cellular off"
+    // The switch turns everything cellular off, so the card says so from the
+    // tap on: while the radio goes down the data link is already gone and the
+    // network still reads registered, which read "Mobile data off".
+    if (radioOff || (radioBusy && !radioWant)) return "Cellular off"
+    if (radioBusy && radioWant) return "Searching"
     if (!registered) return "Searching"
     // As Omarchy's Wi-Fi card says "Not connected" with its switch off.
     if (!dataOn) return modem.registration === "roaming" ? "Roaming · mobile data off" : "Mobile data off"
@@ -345,16 +349,28 @@ Panel {
           }
         }
 
-        // ---------- Details, as the Wi-Fi card's: the link first, then the cell ----------
-        // The same rows and labels as Omarchy's Wi-Fi card (its grid, two
-        // pairs a row, one on a narrow card as patch 0033 has it), then what
-        // only a cellular link has. "--" until there is a sample.
+        // ---------- Details, as the Wi-Fi card's: the cell first, then the link ----------
+        // What only a cellular link has (signal, calls, texts, mobile data),
+        // then the same rows and labels as Omarchy's Wi-Fi card (its grid,
+        // two pairs a row, one on a narrow card as patch 0033 has it). "--"
+        // until there is a sample.
         GridLayout {
           visible: root.present
           width: parent.width
           columns: panel.contentWidth < Style.space(380) ? 2 : 4
           columnSpacing: Style.space(20)
           rowSpacing: Style.spacing.labelGap
+
+          // What only a cellular link has comes first
+          InfoLabel { text: "Signal" }
+          DetailValue { text: root.registered ? root.signal + "%" : "--" }
+          InfoLabel { text: "Calls" }
+          DetailValue { text: root.yesNo(modem.voice) }
+
+          InfoLabel { text: "Texts" }
+          DetailValue { text: root.yesNo(modem.sms) }
+          InfoLabel { text: "Mobile data" }
+          DetailValue { text: root.dataOn ? (modem.data ? "On" : "Connecting") : "Off" }
 
           InfoLabel { text: Commons.I18n.t("network.ping") }
           DetailValue {
@@ -379,16 +395,6 @@ Panel {
 
           InfoLabel { text: Commons.I18n.t("network.ipAddress") }
           DetailValue { text: root.linkUp ? root.link.address : "--"; copyable: root.linkUp }
-          InfoLabel { text: "Signal" }
-          DetailValue { text: root.registered ? root.signal + "%" : "--" }
-
-          InfoLabel { text: "Calls" }
-          DetailValue { text: root.yesNo(modem.voice) }
-          InfoLabel { text: "Texts" }
-          DetailValue { text: root.yesNo(modem.sms) }
-
-          InfoLabel { text: "Mobile data" }
-          DetailValue { text: root.dataOn ? (modem.data ? "On" : "Connecting") : "Off" }
         }
       }
     }
