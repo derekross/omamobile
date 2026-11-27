@@ -37,6 +37,10 @@ Panel {
   // (carrier-name.py, beside this file).
   property string lookedUpName: ""
   property string lookedUpCode: ""
+  // The data link's own details (cell-stats.sh), while the card is open
+  property var link: ({})
+  readonly property bool linkUp: !!link && !!link.iface
+  readonly property string statsScript: String(Qt.resolvedUrl("cell-stats.sh")).replace(/^file:\/\//, "")
   readonly property string carrierScript: String(Qt.resolvedUrl("carrier-name.py")).replace(/^file:\/\//, "")
 
   function title() {
@@ -81,6 +85,7 @@ Panel {
   function refresh() {
     if (!stateFile.running) stateFile.running = true
     if (!dataProc.running) dataProc.running = true
+    if (root.opened && !statsProc.running) statsProc.running = true
   }
 
   function setRadio(on) {
@@ -102,6 +107,23 @@ Panel {
         try { root.modem = JSON.parse(text).modem || {} } catch (e) { root.modem = {} }
       }
     }
+  }
+
+  Process {
+    id: statsProc
+    command: ["bash", root.statsScript]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try { root.link = text.trim() ? JSON.parse(text) : ({}) } catch (e) { root.link = ({}) }
+      }
+    }
+  }
+
+  function bytes(n) {
+    n = Number(n) || 0
+    if (n < 1000 * 1000) return Math.round(n / 1000) + " kB"
+    if (n < 1000 * 1000 * 1000) return (n / 1e6).toFixed(n < 1e7 ? 1 : 0) + " MB"
+    return (n / 1e9).toFixed(2) + " GB"
   }
 
   Process {
@@ -261,6 +283,10 @@ Panel {
           InfoPair { label: "Calls"; value: root.yesNo(modem.voice) }
           InfoPair { label: "Texts"; value: root.yesNo(modem.sms) }
           InfoPair { label: "Mobile data"; value: root.dataOn ? (modem.data ? "On" : "Connecting") : "Off" }
+          InfoPair { visible: root.linkUp; label: "Address"; value: root.link.address || "—" }
+          InfoPair { visible: root.linkUp; label: "Downloaded"; value: root.bytes(root.link.rx) }
+          InfoPair { visible: root.linkUp; label: "Uploaded"; value: root.bytes(root.link.tx) }
+          InfoPair { visible: root.linkUp; label: "Latency"; value: Number(root.link.ping) >= 0 ? Math.round(Number(root.link.ping)) + " ms" : "—" }
         }
       }
     }
