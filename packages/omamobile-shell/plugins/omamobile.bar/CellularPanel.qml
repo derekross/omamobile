@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import QtQuick
+import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Ui
@@ -39,6 +40,37 @@ Panel {
   property string lookedUpCode: ""
   // The data link's own details (cell-stats.sh), while the card is open
   property var link: ({})
+  // As the Wi-Fi card: rates from the change between two samples, ping as the
+  // average of the last 5, packet loss over the last 24
+  property var lastSample: null
+  property real downloadRate: 0
+  property real uploadRate: 0
+  property var pingSamples: []
+  readonly property bool hasPing: pingSamples.length > 0
+  readonly property real pingLatency: {
+    var got = pingSamples.slice(-5).filter(function(v) { return v !== null })
+    if (got.length === 0) return -1
+    return got.reduce(function(a, b) { return a + b }, 0) / got.length
+  }
+  readonly property int packetLoss: {
+    if (pingSamples.length === 0) return 0
+    var lost = pingSamples.filter(function(v) { return v === null }).length
+    return Math.round(lost / pingSamples.length * 100)
+  }
+  onLinkChanged: {
+    var now = Date.now()
+    if (!linkUp) { lastSample = null; downloadRate = 0; uploadRate = 0; pingSamples = []; return }
+    if (lastSample && lastSample.iface === link.iface && now > lastSample.at) {
+      var dt = (now - lastSample.at) / 1000
+      downloadRate = Math.max(0, (link.rx - lastSample.rx) / dt)
+      uploadRate = Math.max(0, (link.tx - lastSample.tx) / dt)
+    }
+    if (lastSample && lastSample.iface !== link.iface) pingSamples = []
+    lastSample = { iface: link.iface, rx: link.rx, tx: link.tx, at: now }
+    var p = Number(link.ping)
+    pingSamples = pingSamples.concat([p >= 0 ? p : null]).slice(-24)
+  }
+  onOpenedChanged: if (!opened) { lastSample = null; downloadRate = 0; uploadRate = 0; pingSamples = [] }
   readonly property bool linkUp: !!link && !!link.iface
   readonly property string statsScript: String(Qt.resolvedUrl("cell-stats.sh")).replace(/^file:\/\//, "")
   readonly property string carrierScript: String(Qt.resolvedUrl("carrier-name.py")).replace(/^file:\/\//, "")
@@ -80,7 +112,7 @@ Panel {
     return modem.registration === "roaming" ? "Roaming" : "Connected"
   }
 
-  function yesNo(value) { return value === true ? "Yes" : (value === false ? "No" : "—") }
+  function yesNo(value) { return value === true ? "Yes" : (value === false ? "No" : "--") }
 
   function refresh() {
     if (!stateFile.running) stateFile.running = true
@@ -119,11 +151,32 @@ Panel {
     }
   }
 
-  function bytes(n) {
-    n = Number(n) || 0
-    if (n < 1000 * 1000) return Math.round(n / 1000) + " kB"
-    if (n < 1000 * 1000 * 1000) return (n / 1e6).toFixed(n < 1e7 ? 1 : 0) + " MB"
-    return (n / 1e9).toFixed(2) + " GB"
+  // The Wi-Fi card's own formats (Omarchy's network Model.js)
+  function formatBytes(bytes) {
+    var f = Commons.I18n.formatNumber
+    var n = Number(bytes)
+    if (!isFinite(n) || n < 0) n = 0
+    if (n < 1024) return f(Math.round(n)) + " B"
+    if (n < 1024 * 1024) return f(n / 1024, 1) + " KB"
+    if (n < 1024 * 1024 * 1024) return f(n / (1024 * 1024), 1) + " MB"
+    return f(n / (1024 * 1024 * 1024), 2) + " GB"
+  }
+  function formatRate(n) { return formatBytes(n) + "/s" }
+  function formatPing(ms) {
+    if (!hasPing) return "--"
+    if (!isFinite(ms) || ms < 0) return Commons.I18n.t("network.timeout")
+    return Commons.I18n.formatNumber(ms, ms > 0 && ms < 10 ? 1 : 0) + " ms"
+  }
+  function formatLoss(percent) { return hasPing ? Commons.I18n.formatNumber(percent || 0) + "%" : "--" }
+  function copyToClipboard(value) {
+    if (!value) return
+    Quickshell.execDetached(["bash", "-c", "printf %s \"$1\" | wl-copy", "copy", value])
+  }
+  // Omarchy's speed test card, as the Wi-Fi card's hero button opens it; only
+  // while the cellular link carries the internet, since it tests that route.
+  function summonSpeedTest() {
+    root.close()
+    if (root.bar && root.bar.shell) root.bar.shell.summon("omarchy.speedtest", JSON.stringify({ connection: root.title() }))
   }
 
   Process {
@@ -188,7 +241,7 @@ Panel {
         // ---------- Hero: signal glyph · carrier and state · data switch ----------
         Item {
           width: parent.width
-          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, cellSwitch.implicitHeight)
+          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroActions.implicitHeight)
 
           Text {
             id: heroIcon
@@ -206,13 +259,14 @@ Panel {
             id: heroLabels
             anchors.left: heroIcon.right
             anchors.leftMargin: Style.space(14)
-            anchors.right: cellSwitch.left
+            anchors.right: heroActions.left
             anchors.rightMargin: Style.space(12)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
 
             Text {
-              text: root.title()
+              // The network's kind rides after the name, as the Wi-Fi card's band does
+              text: root.registered && modem.tech ? root.title() + " (" + modem.tech + ")" : root.title()
               textFormat: Text.PlainText
               color: root.bar.foreground
               font.family: root.bar.fontFamily
@@ -235,15 +289,32 @@ Panel {
             }
           }
 
-          ToggleSwitch {
-            id: cellSwitch
-            visible: root.present
-            checked: root.radioBusy ? root.radioWant : !root.radioOff
-            busy: root.radioBusy
-            foreground: root.bar.foreground
+          RowLayout {
+            id: heroActions
+            spacing: Style.space(8)
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            onToggled: root.setRadio(root.radioOff)
+
+            PanelActionButton {
+              visible: root.linkUp && root.link.default === true
+              iconText: "󰓅"
+              tooltipText: Commons.I18n.t("network.runSpeedTest")
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.subtitle * 1.5
+              Layout.alignment: Qt.AlignVCenter
+              onClicked: root.summonSpeedTest()
+            }
+
+            ToggleSwitch {
+              id: cellSwitch
+              visible: root.present
+              checked: root.radioBusy ? root.radioWant : !root.radioOff
+              busy: root.radioBusy
+              foreground: root.bar.foreground
+              Layout.alignment: Qt.AlignVCenter
+              onToggled: root.setRadio(root.radioOff)
+            }
           }
         }
 
@@ -272,36 +343,65 @@ Panel {
           }
         }
 
-        // ---------- Details ----------
-        Column {
+        // ---------- Details, as the Wi-Fi card's: the link first, then the cell ----------
+        // The same rows and labels as Omarchy's Wi-Fi card (its grid, two
+        // pairs a row, one on a narrow card as patch 0033 has it), then what
+        // only a cellular link has. "--" until there is a sample.
+        GridLayout {
           visible: root.present
           width: parent.width
-          spacing: Style.spacing.labelGap
+          columns: panel.contentWidth < Style.space(380) ? 2 : 4
+          columnSpacing: Style.space(20)
+          rowSpacing: Style.spacing.labelGap
 
-          InfoPair { label: "Network"; value: root.registered ? (modem.tech || "—") : "—" }
-          InfoPair { label: "Signal"; value: root.registered ? root.signal + "%" : "—" }
-          InfoPair { label: "Calls"; value: root.yesNo(modem.voice) }
-          InfoPair { label: "Texts"; value: root.yesNo(modem.sms) }
-          InfoPair { label: "Mobile data"; value: root.dataOn ? (modem.data ? "On" : "Connecting") : "Off" }
-          InfoPair { visible: root.linkUp; label: "Address"; value: root.link.address || "—" }
-          InfoPair { visible: root.linkUp; label: "Downloaded"; value: root.bytes(root.link.rx) }
-          InfoPair { visible: root.linkUp; label: "Uploaded"; value: root.bytes(root.link.tx) }
-          InfoPair { visible: root.linkUp; label: "Latency"; value: Number(root.link.ping) >= 0 ? Math.round(Number(root.link.ping)) + " ms" : "—" }
+          InfoLabel { text: Commons.I18n.t("network.ping") }
+          DetailValue {
+            text: root.linkUp ? root.formatPing(root.pingLatency) : "--"
+            color: root.hasPing && root.packetLoss > 0 ? root.bar.urgent : root.bar.foreground
+          }
+          InfoLabel { text: Commons.I18n.t("network.packetLoss") }
+          DetailValue {
+            text: root.linkUp ? root.formatLoss(root.packetLoss) : "--"
+            color: root.hasPing && root.packetLoss > 0 ? root.bar.urgent : root.bar.foreground
+          }
+
+          InfoLabel { text: Commons.I18n.t("network.receiving") }
+          DetailValue { text: root.linkUp && root.lastSample ? root.formatRate(root.downloadRate) : "--" }
+          InfoLabel { text: Commons.I18n.t("network.sending") }
+          DetailValue { text: root.linkUp && root.lastSample ? root.formatRate(root.uploadRate) : "--" }
+
+          InfoLabel { text: Commons.I18n.t("network.downloaded") }
+          DetailValue { text: root.linkUp ? root.formatBytes(root.link.rx) : "--" }
+          InfoLabel { text: Commons.I18n.t("network.uploaded") }
+          DetailValue { text: root.linkUp ? root.formatBytes(root.link.tx) : "--" }
+
+          InfoLabel { text: Commons.I18n.t("network.ipAddress") }
+          DetailValue { text: root.linkUp ? root.link.address : "--"; copyable: root.linkUp }
+          InfoLabel { text: "Signal" }
+          DetailValue { text: root.registered ? root.signal + "%" : "--" }
+
+          InfoLabel { text: "Calls" }
+          DetailValue { text: root.yesNo(modem.voice) }
+          InfoLabel { text: "Texts" }
+          DetailValue { text: root.yesNo(modem.sms) }
+
+          InfoLabel { text: "Mobile data" }
+          DetailValue { text: root.dataOn ? (modem.data ? "On" : "Connecting") : "Off" }
         }
       }
     }
   }
 
-  component InfoPair: Row {
-    property string label: ""
-    property string value: ""
-
-    width: parent.width
-    spacing: Style.space(8)
-
-    InfoLabel { text: label }
-    Item { width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[2].implicitWidth - parent.spacing * 2); height: 1 }
-    InfoValue { text: value }
+  // The Wi-Fi card's value: right-aligned, a tap copies it where it says so
+  component DetailValue: InfoValue {
+    property bool copyable: false
+    Layout.fillWidth: true
+    horizontalAlignment: Text.AlignRight
+    MouseArea {
+      anchors.fill: parent
+      enabled: parent.copyable && parent.text !== "" && parent.text !== "--"
+      onClicked: root.copyToClipboard(parent.text)
+    }
   }
 
   component InfoLabel: Text {

@@ -334,10 +334,10 @@ cs=$(mktemp -d)
 mkdir -p "$cs/net/rmnet0/statistics" "$cs/net/rmnet1/statistics" "$cs/bin"
 echo unknown >"$cs/net/rmnet0/operstate"; echo unknown >"$cs/net/rmnet1/operstate"
 echo 1234567 >"$cs/net/rmnet1/statistics/rx_bytes"; echo 89 >"$cs/net/rmnet1/statistics/tx_bytes"
-printf '#!/bin/bash\n[[ "$*" == *"dev rmnet1"* && "$*" == *-4* ]] && echo "7: rmnet1    inet 10.1.2.3/32 scope global rmnet1"\nexit 0\n' >"$cs/bin/ip"
+printf '#!/bin/bash\n[[ "$*" == *"dev rmnet1"* && "$*" == *-4* ]] && echo "7: rmnet1    inet 10.1.2.3/32 scope global rmnet1"\n[[ "$*" == "route get 1.1.1.1" ]] && echo "1.1.1.1 dev rmnet1 src 10.1.2.3 uid 0"\nexit 0\n' >"$cs/bin/ip"
 printf '#!/bin/bash\n[[ "$*" == *"-I rmnet1"* ]] && echo "64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time=61.4 ms"\nexit 0\n' >"$cs/bin/ping"
 chmod +x "$cs/bin/ip" "$cs/bin/ping"
-[[ $(PATH="$cs/bin:$PATH" OMAMOBILE_CELL_SYSFS="$cs/net" bash plugins/omamobile.bar/cell-stats.sh) == '{"iface":"rmnet1","address":"10.1.2.3","rx":1234567,"tx":89,"ping":61.4}' ]] ||
+[[ $(PATH="$cs/bin:$PATH" OMAMOBILE_CELL_SYSFS="$cs/net" bash plugins/omamobile.bar/cell-stats.sh) == '{"iface":"rmnet1","address":"10.1.2.3","rx":1234567,"tx":89,"ping":61.4,"default":true}' ]] ||
   fail "cell-stats.sh reports the rmnet link with an address, its bytes and its ping"
 rm -rf "$cs/net/rmnet1"
 [[ -z $(PATH="$cs/bin:$PATH" OMAMOBILE_CELL_SYSFS="$cs/net" bash plugins/omamobile.bar/cell-stats.sh) ]] || fail "cell-stats.sh says nothing with no rmnet address"
