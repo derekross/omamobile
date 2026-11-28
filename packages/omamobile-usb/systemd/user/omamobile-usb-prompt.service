@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT
+# Asks, in a notification, what a computer plugged into the unlocked phone
+# may use (omamobile-usbd's question): SSH & network, file transfer or both.
+[Unit]
+Description=Omamobile USB connection prompt
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionPathExists=/usr/lib/omamobile/omamobile-usbd
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/omamobile/omamobile-usb-prompt
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

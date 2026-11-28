@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MIT
+# Lock: tell logind when the session is locked (its LockedHint), as GNOME's
+# and other lock screens do. Omarchy's lock never set it, so a system service
+# could only ask the shell over the user's IPC whether the phone was locked.
+# The hint follows the lock's own state (currentlyLocked(), read afresh, so a
+# missed binding update can't leave it stale): set when a lock is requested,
+# cleared at unlock, and sent once when the shell starts. The session is
+# "auto", the user's display session, which logind lets the session's own
+# user change without asking polkit. A failed call (no logind) isn't retried
+# in a loop; a change made while a call is in flight is sent when it ends.
+# omamobile-usb turns USB data off while the hint is set. Candidate for
+# upstream Omarchy.
+#
+# Against Omarchy 4.5.0 (4.5.0-3).
+diff --git i/shell/plugins/lock/Service.qml w/shell/plugins/lock/Service.qml
+index f0bfdec..b86aa82 100644
+--- i/shell/plugins/lock/Service.qml
++++ w/shell/plugins/lock/Service.qml
+@@ -74,6 +74,25 @@ Item {
+   function currentlyLocked() {
+     return lockRequested || sessionLock.locked || sessionLock.secure
+   }
++
++  // logind's LockedHint follows the lock, as other lock screens set it, so
++  // system services can tell a locked session from an unlocked one (a phone
++  // turns USB data off while it is set). It is sent from the lock's own state,
++  // read afresh; a change while a call is in flight goes out when it ends.
++  property bool lockedHintKnown: false
++  property bool lockedHintSent: false
++  function syncLockedHint() {
++    if (lockedHintProc.running) return
++    var want = currentlyLocked()
++    if (lockedHintKnown && lockedHintSent === want) return
++    lockedHintProc.value = want
++    lockedHintProc.command = ["busctl", "call", "org.freedesktop.login1",
++      "/org/freedesktop/login1/session/auto", "org.freedesktop.login1.Session",
++      "SetLockedHint", "b", want ? "true" : "false"]
++    lockedHintProc.running = true
++  }
++  onLockedChanged: syncLockedHint()
++
+   readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating
+   // A prompt clears the unavailable notice before the attempt finishes.
+   readonly property bool fingerprintUnavailable: FingerprintModel.isUnavailable(fingerprintProbeStreak) || (fingerprintConfigured && (!fingerprintAttemptReachedDevice || fingerprintAttemptFastError) && FingerprintModel.isUnavailable(fingerprintUnreachedStreak))
+@@ -229,6 +248,7 @@ Item {
+     lockRequested = true
+     armBlankTimer()
+     logEvent("lock-requested")
++    syncLockedHint()
+     queueSessionLock()
+ 
+     Qt.callLater(function() {
+@@ -250,6 +270,7 @@ Item {
+     idleBlankTimer.stop()
+     sessionLock.locked = false
+     logEvent("unlocked")
++    syncLockedHint()
+     runWake()
+   }
+ 
+@@ -769,6 +790,18 @@ Item {
+     }
+   }
+ 
++  Process {
++    id: lockedHintProc
++    property bool value: false
++    onExited: function(exitCode) {
++      root.lockedHintKnown = exitCode === 0
++      if (exitCode === 0) root.lockedHintSent = lockedHintProc.value
++      // Only a change made meanwhile is sent again: a failure isn't retried
++      // in a loop (no logind, no busctl).
++      if (root.currentlyLocked() !== lockedHintProc.value) root.syncLockedHint()
++    }
++  }
++
+   Process {
+     id: wakeProcess
+     command: ["bash", "-c", "omarchy-system-wake"]
+@@ -897,6 +930,7 @@ Item {
+     refreshBackground()
+     refreshFingerprintStatus()
+     checkStrandedLock()
++    syncLockedHint()
+   }
+ 
+   ShellIpc {

@@ -1,0 +1,437 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# omamobile-usbd: the phone's USB data follows the lock, as on Android.
+#
+#   locked             no USB data at all: the gadget is unbound from the
+#                      controller (a computer sees no device, only the
+#                      charge), and USB host ports authorize no new device.
+#   unlocked, computer charging only until the owner chooses, in a
+#                      notification (omamobile-usb-prompt): "SSH & network"
+#                      (CDC NCM + ACM, the USB network SSH runs on), "File
+#                      transfer" (MTP, umtprd as the session's user) or both.
+#                      The choice holds until the cable is pulled; a lock
+#                      turns data off and the unlock brings the choice back.
+#   unlocked, charger  nothing to ask.
+#   before the first   the gadget stays as the initramfs set it up, so a
+#   session            phone whose session never starts can still be reached
+#                      over USB (as Android keeps USB before the first unlock).
+#
+# Locked is logind's LockedHint on seat0's active session, which Omarchy's
+# lock sets (omamobile-omarchy 0.1.54, patch 0038). A computer is the USB power
+# supply's BC1.2 detection: usb_type SDP or CDP (a charger reads DCP). The
+# detection is the charger's own, so it works with the gadget unbound.
+#
+# /etc/omamobile/usb.conf: UNLOCKED= what an unlocked phone gives a computer
+# before anyone chooses (ask, charge, network, files, both; default ask),
+# LOCKED= off, or keep for bring-up (USB stays as it is while locked), and
+# SUPPLY= the power supply's name when the first USB one isn't it.
+#
+# State for the prompt and the CLI: /run/omamobile/usb/state (key=value).
+# Requests: lines on the FIFO /run/omamobile/usb/ctl ("mode network",
+# "ask"), writable by root and the session user's group. A stop (systemctl
+# stop omamobile-usb) puts the USB network back, as it was before this ran.
+#
+# Tests point it at fake trees: USB_GADGET, USB_UDC_CLASS, USB_SUPPLY_CLASS,
+# USB_BUS_DEVICES, USB_RUN, USB_CONF, USB_FAKE_SESSION (a file holding
+# "uid user yes|no", or empty for no session), USB_MONITORS=0, USB_ONCE=1.
+set -uo pipefail
+
+G=${USB_GADGET:-/sys/kernel/config/usb_gadget/g1}
+UDC_CLASS=${USB_UDC_CLASS:-/sys/class/udc}
+SUPPLY_CLASS=${USB_SUPPLY_CLASS:-/sys/class/power_supply}
+BUS=${USB_BUS_DEVICES:-/sys/bus/usb/devices}
+RUN=${USB_RUN:-/run/omamobile/usb}
+CONF=${USB_CONF:-/etc/omamobile/usb.conf}
+FFS=${USB_FFS:-$RUN/ffs}
+MONITORS=${USB_MONITORS:-1}
+TICK=${USB_TICK:-30}
+CFG=$G/configs/c.1
+MTP_UNIT=omamobile-usb-mtp
+
+log() { echo "omamobile-usbd: $*" >&2; }
+
+# ---------------------------------------------------------------- settings
+
+UNLOCKED=ask LOCKED=off SUPPLY=""
+read_conf() {
+  UNLOCKED=ask LOCKED=off SUPPLY=""
+  [[ -r $CONF ]] || return 0
+  local k v
+  while IFS='=' read -r k v || [[ -n $k ]]; do
+    k=${k//[[:space:]]/}
+    [[ -z $k || $k == \#* ]] && continue
+    v=${v%%#*}; v=${v//[[:space:]\"\']/}
+    case $k in
+      UNLOCKED) case $v in ask|charge|network|files|both) UNLOCKED=$v ;; *) log "usb.conf: UNLOCKED=$v ignored" ;; esac ;;
+      LOCKED) case $v in off|keep) LOCKED=$v ;; *) log "usb.conf: LOCKED=$v ignored" ;; esac ;;
+      SUPPLY) [[ $v =~ ^[A-Za-z0-9._-]+$ ]] && SUPPLY=$v ;;
+    esac
+  done < "$CONF"
+}
+
+# ---------------------------------------------------------------- inputs
+
+# "uid user yes|no" for seat0's active user session, nothing without one.
+session_info() {
+  if [[ -v USB_FAKE_SESSION ]]; then cat "$USB_FAKE_SESSION" 2>/dev/null; return 0; fi
+  local id k v uid="" name="" locked="" class=""
+  id=$(loginctl show-seat seat0 -p ActiveSession --value 2>/dev/null) || return 0
+  [[ -n $id ]] || return 0
+  while IFS='=' read -r k v; do
+    case $k in User) uid=$v ;; Name) name=$v ;; LockedHint) locked=$v ;; Class) class=$v ;; esac
+  done < <(loginctl show-session "$id" -p User -p Name -p LockedHint -p Class 2>/dev/null)
+  [[ $class == user && $uid =~ ^[0-9]+$ && -n $name ]] || return 0
+  echo "$uid $name ${locked:-no}"
+}
+
+supply_dir() {
+  local d
+  if [[ -n $SUPPLY ]]; then echo "$SUPPLY_CLASS/$SUPPLY"; return; fi
+  for d in "$SUPPLY_CLASS"/*; do
+    [[ -r $d/type && -r $d/online ]] || continue
+    case $(<"$d/type") in USB|USB_*) echo "$d"; return ;; esac
+  done
+}
+
+# What is at the port: SDP or CDP (a computer), DCP (a charger), another
+# BC1.2 result, "none" (nothing, or no VBUS) or "unknown" (no USB supply).
+host_kind() {
+  local d t online
+  d=$(supply_dir)
+  [[ -n $d && -r $d/online ]] || { echo unknown; return; }
+  online=$(<"$d/online")
+  [[ $online == 1 ]] || { echo none; return; }
+  if [[ -r $d/usb_type ]]; then
+    t=$(<"$d/usb_type")
+    [[ $t == *\[*\]* ]] && { t=${t#*\[}; echo "${t%%\]*}"; return; }
+  fi
+  # Older drivers say it in type: USB (SDP), USB_CDP, USB_DCP
+  t=$(<"$d/type"); t=${t#USB_}; [[ $t == USB ]] && t=SDP
+  echo "$t"
+}
+
+is_computer() { [[ $1 == SDP || $1 == CDP || $1 == unknown ]]; }
+
+# ---------------------------------------------------------------- gadget
+
+udc_now() { local u=""; [[ -r $G/UDC ]] && u=$(<"$G/UDC"); echo "$u"; }
+UDC=""
+udc_name() {
+  [[ -n $UDC ]] && { echo "$UDC"; return; }
+  local u; u=$(udc_now)
+  if [[ -z $u ]]; then for u in "$UDC_CLASS"/*; do [[ -e $u ]] && { u=${u##*/}; break; }; u=""; done; fi
+  UDC=$u; echo "$u"
+}
+bound() { [[ -n $(udc_now) ]]; }
+unbind() { bound || return 0; echo "" > "$G/UDC" 2>/dev/null || log "unbind failed"; }
+bind() {
+  local u; u=$(udc_name)
+  [[ -n $u ]] || { log "no USB device controller"; return 1; }
+  echo "$u" > "$G/UDC" 2>/dev/null || { log "bind to $u failed"; return 1; }
+}
+
+funcs_for() {
+  local f out=()
+  case $1 in
+    network) for f in ncm.usb0 acm.GS0; do [[ -d $G/functions/$f ]] && out+=("$f"); done ;;
+    files) out=(ffs.mtp) ;;
+    both) for f in ncm.usb0 acm.GS0; do [[ -d $G/functions/$f ]] && out+=("$f"); done; out+=(ffs.mtp) ;;
+  esac
+  echo "${out[*]}"
+}
+linked() {
+  local l out=()
+  for l in "$CFG"/*; do [[ -L $l ]] && out+=("${l##*/}"); done
+  echo "${out[*]}"
+}
+# The same set of functions, in any order ("a b" is "b a")
+same_set() { [[ $(tr ' ' '\n' <<< "$1" | grep . | sort | tr '\n' ' ') == $(tr ' ' '\n' <<< "$2" | grep . | sort | tr '\n' ' ') ]]; }
+mode_now() {
+  bound || { echo charge; return; }
+  local l; l=" $(linked) "
+  if [[ $l == *" ncm.usb0 "* && $l == *" ffs.mtp "* ]]; then echo both
+  elif [[ $l == *" ffs.mtp "* ]]; then echo files
+  elif [[ $l == *" ncm.usb0 "* ]]; then echo network
+  else echo other; fi
+}
+
+# ---------------------------------------------------------------- MTP
+
+mtp_active() { systemctl is-active -q "$MTP_UNIT@*.service" 2>/dev/null; }
+stop_mtp() {
+  mtp_active || return 0
+  systemctl stop "$MTP_UNIT@*.service" 2>/dev/null || true
+}
+
+# The owner's media folders (the XDG user dirs that exist, inside the home),
+# each a storage: never the whole home, whose dotfiles hold keys and config.
+storages() {
+  local home=$1 key dir name f=$1/.config/user-dirs.dirs
+  local -A xdg=([DOCUMENTS]=Documents [DOWNLOAD]=Downloads [MUSIC]=Music [PICTURES]=Pictures [VIDEOS]=Videos)
+  if [[ -r $f ]]; then
+    while IFS='=' read -r key dir; do
+      key=${key#XDG_}; key=${key%_DIR}
+      [[ -v xdg[$key] ]] || continue
+      dir=${dir//\"/}; dir=${dir/#\$HOME/$home}
+      [[ $dir == "$home"/* ]] && xdg[$key]=${dir#"$home"/}
+    done < <(grep -E '^XDG_[A-Z]+_DIR=' "$f")
+  fi
+  for key in DOCUMENTS DOWNLOAD MUSIC PICTURES VIDEOS; do
+    dir=$home/${xdg[$key]}
+    [[ -d $dir && ! -L $dir && $dir != *\"* ]] || continue
+    [[ $(realpath -e -- "$dir" 2>/dev/null) == "$home"/* ]] || continue
+    name=${dir##*/}
+    printf 'storage "%s" "%s" "rw"\n' "$dir" "$name"
+  done
+}
+
+write_mtp_conf() {
+  local home=$1 product="Omamobile" s
+  [[ -r $G/strings/0x409/product ]] && product=$(<"$G/strings/0x409/product")
+  s=$(storages "$home")
+  [[ -n $s ]] || { log "MTP: no media folders in $home"; return 1; }
+  {
+    echo "# Written by omamobile-usbd for this session; replaced at every start"
+    echo "loop_on_disconnect 1"
+    echo "show_hidden_files 0x0"
+    echo "umask 022"
+    echo "$s"
+    echo "manufacturer \"Omamobile\""
+    echo "product \"${product//\"/}\""
+    echo "serial \"omamobile\""
+    echo "firmware_version \"omamobile-usb\""
+    echo "interface \"MTP\""
+    echo "usb_functionfs_mode 0x1"
+    echo "usb_dev_path \"$FFS/ep0\""
+    echo "usb_epin_path \"$FFS/ep1\""
+    echo "usb_epout_path \"$FFS/ep2\""
+    echo "usb_epint_path \"$FFS/ep3\""
+    echo "usb_max_packet_size 0x200"
+  } > "$RUN/umtprd.conf.tmp" && mv "$RUN/umtprd.conf.tmp" "$RUN/umtprd.conf"
+}
+
+# FunctionFS for the session's user, then umtprd as that user. Its unit is
+# Type=notify: ready once the descriptors are written, which binding needs.
+start_mtp() {
+  local uid=$1 user=$2 gid home
+  gid=$(id -g -- "$user" 2>/dev/null) || return 1
+  home=$(getent passwd "$user" | cut -d: -f6)
+  [[ -n $home && -d $home ]] || { log "MTP: no home for $user"; return 1; }
+  if mtp_active && systemctl is-active -q "$MTP_UNIT@$user.service" && [[ -e $FFS/ep1 ]]; then return 0; fi
+  stop_mtp
+  [[ -d $G/functions/ffs.mtp ]] || mkdir "$G/functions/ffs.mtp" 2>/dev/null || { log "MTP: no FunctionFS in the gadget"; return 1; }
+  mkdir -p "$FFS"
+  if mountpoint -q "$FFS" && [[ $(stat -c %u "$FFS/ep0" 2>/dev/null) != "$uid" ]]; then umount "$FFS" || return 1; fi
+  if ! mountpoint -q "$FFS"; then
+    mount -t functionfs -o "uid=$uid,gid=$gid,rmode=0700,fmode=0600" mtp "$FFS" || { log "MTP: FunctionFS mount failed"; return 1; }
+  fi
+  write_mtp_conf "$home" || return 1
+  systemctl start "$MTP_UNIT@$user.service" || { log "MTP: umtprd did not start"; return 1; }
+  [[ -e $FFS/ep1 ]] || { log "MTP: umtprd wrote no descriptors"; stop_mtp; return 1; }
+}
+
+# ---------------------------------------------------------------- apply
+
+# Puts the gadget in MODE (charge, network, files or both). Echoes the mode
+# it ended in: files falls back to charge, both to network, when MTP can't
+# start.
+apply_mode() {
+  local mode=$1 uid=${2:-} user=${3:-} want l f IFS=$' \t\n'
+  case $mode in
+    charge)
+      unbind; stop_mtp; echo charge; return ;;
+  esac
+  want=" $(funcs_for "$mode") "
+  # MTP that failed for this choice: what is left of it, as it is now
+  if [[ $want == *" ffs.mtp "* && -e $RUN/mtp-failed ]]; then
+    want=${want/ ffs.mtp / }
+    [[ $mode == both ]] && mode=network || { unbind; stop_mtp; echo charge; return; }
+  fi
+  # Already so: nothing is touched (a rebind sends uevents, which bring
+  # the next look here)
+  if bound && same_set "$(linked)" "$want" && { [[ $want != *" ffs.mtp "* ]] || mtp_active; }; then
+    echo "$mode"; return
+  fi
+  unbind
+  for l in $(linked); do [[ $want == *" $l "* ]] || rm -f "$CFG/$l"; done
+  if [[ $want == *" ffs.mtp "* ]]; then
+    if [[ -z $user || -e $RUN/mtp-failed ]] || ! start_mtp "$uid" "$user"; then
+      # Not again for this choice: every try rebinds the gadget
+      : > "$RUN/mtp-failed"
+      want=${want/ ffs.mtp / }
+      [[ $mode == both ]] && mode=network || mode=charge
+      rm -f "$CFG/ffs.mtp"
+    fi
+  else
+    stop_mtp
+  fi
+  [[ $mode == charge ]] && { echo charge; return; }
+  for f in $want; do [[ -L $CFG/$f ]] || ln -s "$G/functions/$f" "$CFG/$f"; done
+  case $mode in network) l="NCM + ACM" ;; files) l="MTP" ;; both) l="NCM + ACM + MTP" ;; esac
+  [[ -w $CFG/strings/0x409/configuration ]] && echo "$l" > "$CFG/strings/0x409/configuration" 2>/dev/null
+  if bind; then echo "$mode"; else echo charge; fi
+}
+
+# USB host ports (a phone in host mode): no new device is authorized while
+# locked; at unlock the ports' setting comes back and what was plugged in
+# meanwhile is authorized. Left alone where usbguard decides.
+host_ports() {
+  local lock=$1 hub n saved dev
+  systemctl is-active -q usbguard.service 2>/dev/null && return 0
+  for hub in "$BUS"/usb[0-9]*; do
+    [[ -w $hub/authorized_default ]] || continue
+    n=${hub##*/usb}; saved=$RUN/hub-$n
+    if [[ $lock == 1 ]]; then
+      [[ -e $saved ]] && continue
+      cat "$hub/authorized_default" > "$saved" && echo 0 > "$hub/authorized_default"
+    elif [[ -e $saved ]]; then
+      cat "$saved" > "$hub/authorized_default" && rm -f "$saved"
+      for dev in "$BUS/$n"-*; do
+        [[ -w $dev/authorized && $(<"$dev/authorized") == 0 ]] && echo 1 > "$dev/authorized"
+      done
+    fi
+  done
+}
+
+# ---------------------------------------------------------------- state
+
+CHOICE="" FORCE=0 PROMPT=0 ASK=0 LAST_LINE="" CTL_GROUP=""
+load_state() {
+  local k v
+  [[ -r $RUN/state ]] || return 0
+  while IFS='=' read -r k v; do
+    case $k in choice) CHOICE=$v ;; prompt) [[ $v =~ ^[0-9]+$ ]] && PROMPT=$v ;; ask) ASK=$v ;; force) FORCE=$v ;; esac
+  done < "$RUN/state"
+}
+write_state() {
+  local line="policy=$1 host=$2 mode=$3 choice=$CHOICE ask=$ASK force=$FORCE prompt=$PROMPT user=$4"
+  [[ $line == "$LAST_LINE" ]] && return
+  {
+    echo "policy=$1"; echo "host=$2"; echo "mode=$3"; echo "choice=$CHOICE"
+    echo "ask=$ASK"; echo "force=$FORCE"; echo "prompt=$PROMPT"; echo "user=$4"
+  } > "$RUN/state.tmp" && chmod 644 "$RUN/state.tmp" && mv "$RUN/state.tmp" "$RUN/state"
+  if [[ ${line% prompt=*} != "${LAST_LINE% prompt=*}" ]]; then
+    log "$1, at the port: $2, USB: $3${CHOICE:+ (chosen: $CHOICE)}$( ((ASK)) && echo ", asking")"
+  fi
+  LAST_LINE=$line
+}
+
+# The session user's group may write requests; nobody else.
+ctl_owner() {
+  local user=$1 gid=0
+  [[ -n $user ]] && gid=$(id -g -- "$user" 2>/dev/null || echo 0)
+  [[ $gid == "$CTL_GROUP" ]] && return
+  chown "root:$gid" "$RUN/ctl" 2>/dev/null && chmod 0620 "$RUN/ctl" && CTL_GROUP=$gid
+}
+
+evaluate() {
+  read_conf
+  local s uid="" user="" locked="" kind policy target mode
+  s=$(session_info)
+  [[ -n $s ]] && read -r uid user locked <<< "$s"
+  kind=$(host_kind)
+
+  # A choice is for one connection: it ends when the cable comes out (no
+  # VBUS), not when the detection reads something else for a moment.
+  [[ $kind == none ]] && { CHOICE=""; FORCE=0; rm -f "$RUN/mtp-failed"; }
+  if [[ -z $s ]]; then
+    if [[ -e $RUN/seen-session ]]; then policy=locked; else policy=boot; fi
+  else
+    : > "$RUN/seen-session"
+    [[ $locked == yes ]] && policy=locked || policy=unlocked
+  fi
+  ctl_owner "$user"
+
+  local ask=0
+  case $policy in
+    boot) target=leave ;;
+    locked) [[ $LOCKED == keep ]] && target=leave || target=charge ;;
+    unlocked)
+      if ! is_computer "$kind"; then target=charge
+      elif [[ -n $CHOICE ]]; then target=$CHOICE
+      elif [[ $UNLOCKED == ask || $FORCE == 1 ]]; then target=charge; ask=1
+      else target=$UNLOCKED; fi ;;
+  esac
+  # Each question gets its own id (the clock in ns), so the prompt can't take
+  # a question asked after a restart for one it already showed.
+  [[ $ask == 1 && $ASK != 1 ]] && PROMPT=$(date +%s%N)
+  ASK=$ask
+
+  if [[ $target == leave ]]; then mode=$(mode_now)
+  else mode=$(apply_mode "$target" "$uid" "$user"); fi
+  if [[ $policy == locked && $LOCKED == off ]]; then host_ports 1; else host_ports 0; fi
+  write_state "$policy" "$kind" "$mode" "$user"
+}
+
+request() {
+  local what=$1 arg=${2:-} s locked=""
+  s=$(session_info); [[ -n $s ]] && read -r _ _ locked <<< "$s"
+  case $what in
+    mode)
+      case $arg in charge|network|files|both) ;; *) log "request: no mode '$arg'"; return ;; esac
+      [[ -n $s && $locked != yes ]] || { log "request for $arg refused: locked"; return; }
+      is_computer "$(host_kind)" || { log "request for $arg ignored: no computer at the port"; return; }
+      CHOICE=$arg; FORCE=0; rm -f "$RUN/mtp-failed" ;;
+    ask) CHOICE=""; FORCE=1; ASK=0 ;;
+  esac
+}
+
+# ---------------------------------------------------------------- main
+
+stopping=0
+on_stop() {
+  # The trap can run inside "IFS= read": word splitting as usual from here
+  local IFS=$' \t\n'
+  ((stopping)) && exit 0
+  stopping=1
+  log "stopping: the USB network comes back"
+  host_ports 0
+  CHOICE=""; ASK=0; FORCE=0
+  local m; m=$(apply_mode network)
+  write_state stopped "$(host_kind)" "$m" ""
+  rm -f "$RUN/state"
+  ((${#MON[@]})) && kill "${MON[@]}" 2>/dev/null
+  exit 0
+}
+
+mkdir -p "$RUN" && chmod 755 "$RUN"
+[[ -d $G ]] || { log "no USB gadget at $G"; exit 1; }
+[[ -p $RUN/ctl ]] || { rm -f "$RUN/ctl"; mkfifo -m 0600 "$RUN/ctl"; }
+load_state
+exec 3<>"$RUN/ctl"
+
+if [[ ${USB_ONCE:-0} == 1 ]]; then
+  # Tests: the queued requests, then one evaluation.
+  while IFS= read -r -t 0.1 line <&3; do
+    read -r w a _ <<< "$line"; [[ $w == mode || $w == ask ]] && request "$w" "${a:-}"
+  done
+  evaluate
+  exit 0
+fi
+
+trap on_stop TERM INT
+MON=()
+if [[ $MONITORS == 1 ]]; then
+  # logind's signals (a lock, an unlock, a session coming or going) and the
+  # kernel's (the supply at a plug or unplug, the UDC, host ports), each as
+  # a line on the FIFO: any line means "look again".
+  { gdbus monitor --system --dest org.freedesktop.login1 2>/dev/null \
+      | while IFS= read -r l; do echo tick; done; } >&3 &
+  MON+=($!)
+  { udevadm monitor --udev -s power_supply -s udc -s usb 2>/dev/null \
+      | while IFS= read -r l; do [[ $l == UDEV* ]] && echo tick; done; } >&3 &
+  MON+=($!)
+  disown -a
+fi
+
+evaluate
+while true; do
+  if IFS= read -r -t "$TICK" line <&3; then
+    read -r w a _ <<< "$line"; [[ $w == mode || $w == ask ]] && request "$w" "${a:-}"
+    # A burst (a plug sends several uevents) is one evaluation
+    while IFS= read -r -t 0.3 line <&3; do
+      read -r w a _ <<< "$line"; [[ $w == mode || $w == ask ]] && request "$w" "${a:-}"
+    done
+  fi
+  evaluate
+done

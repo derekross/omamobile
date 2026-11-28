@@ -1,0 +1,233 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Tests for omamobile-usb: syntax, the staged layout, then omamobile-usbd's
+# policy against a fake gadget, power supply, session and systemctl (lock,
+# unlock, plug, unplug, charger, each mode, MTP's configuration, host ports,
+# the stop), the prompt against a fake notify-send, and the CLI's refusals.
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
+pass() { printf 'ok - %s\n' "$1"; }
+
+for f in install bin/omamobile-usb lib/omamobile-usbd lib/omamobile-usb-prompt omamobile-usb.install test/all; do
+  bash -n "$f" || fail "$f parses"
+done
+pass "scripts parse"
+
+t=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null || true; [[ -n ${KEEP:-} ]] || rm -rf "$t"' EXIT; [[ -n ${KEEP:-} ]] && echo "# $t"
+./install "$t/stage"
+for f in usr/bin/omamobile-usb usr/lib/omamobile/omamobile-usbd usr/lib/omamobile/omamobile-usb-prompt \
+         usr/lib/systemd/system/omamobile-usb.service usr/lib/systemd/system/omamobile-usb-mtp@.service \
+         usr/lib/systemd/user/omamobile-usb-prompt.service etc/omamobile/usb.conf \
+         usr/share/licenses/omamobile-usb/LICENSE usr/share/omamobile/usb/version; do
+  [[ -e $t/stage/$f ]] || fail "not staged: $f"
+done
+[[ $(readlink "$t/stage/usr/lib/systemd/system/multi-user.target.wants/omamobile-usb.service") == ../omamobile-usb.service ]] \
+  || fail "the daemon is on by a vendor wants link"
+[[ $(readlink "$t/stage/usr/lib/systemd/user/graphical-session.target.wants/omamobile-usb-prompt.service") == ../omamobile-usb-prompt.service ]] \
+  || fail "the prompt is on by a vendor wants link"
+grep -qxF 'User=%i' "$t/stage/usr/lib/systemd/system/omamobile-usb-mtp@.service" || fail "umtprd runs as the session's user"
+grep -qxF 'Type=notify' "$t/stage/usr/lib/systemd/system/omamobile-usb-mtp@.service" || fail "umtprd's unit waits for its descriptors"
+grep -qxF 'LOCKED=off' etc/omamobile/usb.conf && grep -qxF 'UNLOCKED=ask' etc/omamobile/usb.conf || fail "defaults: off while locked, ask"
+grep -q 'umtp-responder' PKGBUILD || fail "depends on umtp-responder"
+if command -v systemd-analyze >/dev/null; then
+  systemd-analyze verify --root="$t/stage" --man=no "$t/stage/usr/lib/systemd/system/omamobile-usb.service" 2>&1 \
+    | grep -v "Failed to prepare filename\|is not executable\|systemd-logind" | grep . && fail "systemd-analyze verify"
+fi
+pass "install stages the daemon, the CLI, the prompt, the units and their wants links"
+
+# ---------------------------------------------------------------- fakes
+f=$t/f; mkdir -p "$f/bin" "$f/home/Pictures" "$f/home/Documents" "$f/home/.ssh" "$f/home/.config" "$f/run"
+ln -s /etc "$f/home/Music"          # a symlink out of the home: never shared
+printf 'XDG_PICTURES_DIR="$HOME/Pictures"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\nXDG_MUSIC_DIR="$HOME/Music"\n' > "$f/home/.config/user-dirs.dirs"
+G=$f/gadget
+mkdir -p "$G/configs/c.1/strings/0x409" "$G/strings/0x409" "$G/functions/ncm.usb0" "$G/functions/acm.GS0" "$f/udc/a600000.usb"
+echo "NCM + ACM" > "$G/configs/c.1/strings/0x409/configuration"
+echo "OnePlus 7T Pro" > "$G/strings/0x409/product"
+ln -s "$G/functions/ncm.usb0" "$G/configs/c.1/ncm.usb0"
+ln -s "$G/functions/acm.GS0" "$G/configs/c.1/acm.GS0"
+echo a600000.usb > "$G/UDC"                     # as the initramfs leaves it
+P=$f/supply/pm8150b-charger; mkdir -p "$P" "$f/supply/bq27411-0"
+echo Battery > "$f/supply/bq27411-0/type"; echo 1 > "$f/supply/bq27411-0/online"
+echo USB > "$P/type"
+plug() { echo 1 > "$P/online"; echo "Unknown [$1] DCP CDP" > "$P/usb_type"; [[ $1 == DCP ]] && echo "Unknown SDP [DCP] CDP" > "$P/usb_type"; :; }
+unplug() { echo 0 > "$P/online"; echo "[Unknown] SDP DCP CDP" > "$P/usb_type"; }
+B=$f/bus; mkdir -p "$B/usb1" "$B/1-1"; echo 1 > "$B/usb1/authorized_default"
+uid=$(id -u) gid=$(id -g)
+S=$f/session
+lock() { echo "$uid owner yes" > "$S"; }
+unlock() { echo "$uid owner no" > "$S"; }
+nosession() { : > "$S"; }
+
+# systemctl, mount, mountpoint, umount, id, getent for the daemon
+cat > "$f/bin/systemctl" <<EOF
+#!/bin/bash
+q=0; [[ \$1 == is-active ]] && { [[ \$2 == -q ]] && shift; shift
+  case \$1 in omamobile-usb-mtp@*) [[ -e $f/mtp-active ]]; exit ;; *) exit 3 ;; esac; }
+case \$1 in
+  start) echo "start \$2" >> $f/ops; [[ -e $f/mtp-broken ]] && exit 1; touch $f/run/ffs/ep1 $f/mtp-active ;;
+  stop) echo "stop \$2" >> $f/ops; rm -f $f/mtp-active $f/run/ffs/ep1 ;;
+esac
+EOF
+cat > "$f/bin/mount" <<EOF
+#!/bin/bash
+echo "mount \$*" >> $f/ops; d=\${@: -1}; touch "\$d/ep0" $f/mounted
+EOF
+printf '#!/bin/bash\n[[ -e %s/mounted ]]\n' "$f" > "$f/bin/mountpoint"
+printf '#!/bin/bash\nrm -f %s/mounted\n' "$f" > "$f/bin/umount"
+printf '#!/bin/bash\n[[ $1 == -g ]] && { echo %s; exit 0; }\nexec /usr/bin/id "$@"\n' "$gid" > "$f/bin/id"
+printf '#!/bin/bash\necho "owner:x:%s:%s::%s:/bin/bash"\n' "$uid" "$gid" "$f/home" > "$f/bin/getent"
+chmod +x "$f/bin"/*
+
+C=$f/usb.conf; printf 'LOCKED=off\nUNLOCKED=ask\n' > "$C"
+d() {
+  PATH=$f/bin:$PATH USB_GADGET=$G USB_UDC_CLASS=$f/udc USB_SUPPLY_CLASS=$f/supply USB_BUS_DEVICES=$B \
+    USB_RUN=$f/run USB_CONF=$C USB_FAKE_SESSION=$S USB_MONITORS=0 USB_ONCE=1 lib/omamobile-usbd 2>> "$f/log"
+}
+st() { sed -n "s/^$1=//p" "$f/run/state"; }
+links() { (cd "$G/configs/c.1" && for l in *; do [[ -L $l ]] && printf '%s ' "$l"; done; echo); }
+udc() { cat "$G/UDC"; }
+# Requests go through the FIFO; d() drains it. The test holds it open, as
+# the running daemon does: a FIFO nobody holds drops what was written.
+send() { [[ -e /proc/$$/fd/7 ]] || exec 7<>"$f/run/ctl"; printf '%s\n' "$1" >&7; }
+
+# ---------------------------------------------------------------- policy
+nosession; plug SDP; d
+[[ $(st policy) == boot && $(udc) == a600000.usb && $(links) == "acm.GS0 ncm.usb0 " && $(st mode) == network ]] \
+  || fail "before the first session the gadget stays as the boot set it up ($(st policy) $(udc) $(links))"
+[[ -p $f/run/ctl ]] || fail "the request FIFO exists"
+pass "before the first session: USB left as the initramfs set it up"
+
+unlock; d
+[[ $(st policy) == unlocked && -z $(udc) && $(st mode) == charge && $(st ask) == 1 && $(st prompt) =~ ^[0-9]+$ ]] \
+  || fail "unlocked with a computer: charging only, asking ($(st policy) '$(udc)' $(st mode) ask=$(st ask))"
+p1=$(st prompt); d; [[ $(st prompt) == "$p1" ]] || fail "the same question isn't asked twice"
+pass "unlocked at a computer: charging only until the owner chooses, asked once"
+
+send "mode network"; d
+[[ $(udc) == a600000.usb && $(links) == "acm.GS0 ncm.usb0 " && $(st mode) == network && $(st choice) == network && $(st ask) == 0 ]] \
+  || fail "SSH & network chosen ($(udc) $(links) $(st mode))"
+[[ $(cat "$G/configs/c.1/strings/0x409/configuration") == "NCM + ACM" ]] || fail "configuration string"
+touch -d '2000-01-01' "$G/UDC"; d; d
+[[ $(stat -c %Y "$G/UDC") == $(date -d 2000-01-01 +%s) ]] || fail "a look at a gadget already as chosen doesn't rebind it (a rebind's uevents loop back)"
+pass "the owner's choice: SSH & network (NCM + ACM) bound"
+
+lock; d
+[[ $(st policy) == locked && -z $(udc) && $(st mode) == charge && $(st choice) == network && $(st ask) == 0 ]] \
+  || fail "locked: no USB data, the choice kept ($(st policy) '$(udc)' $(st choice))"
+[[ $(cat "$B/usb1/authorized_default") == 0 ]] || fail "locked: host ports authorize no new device"
+send "mode network"; d
+[[ -z $(udc) ]] && grep -q "refused: locked" "$f/log" || fail "a request while locked is refused"
+pass "locked: the gadget unbound, host ports closed, requests refused"
+
+echo 0 > "$B/1-1/authorized"            # plugged in while locked
+unlock; d
+[[ $(udc) == a600000.usb && $(st mode) == network && $(st ask) == 0 ]] || fail "unlock brings the choice back without asking"
+[[ $(cat "$B/usb1/authorized_default") == 1 && $(cat "$B/1-1/authorized") == 1 ]] || fail "unlock: host ports as before, the waiting device authorized"
+pass "unlock: the connection's choice comes back, host ports reopen"
+
+unplug; d
+[[ -z $(udc) && $(st choice) == "" && $(st host) == none && $(st ask) == 0 ]] || fail "unplug ends the choice ($(st choice))"
+plug DCP; d
+[[ -z $(udc) && $(st host) == DCP && $(st ask) == 0 ]] || fail "a charger: nothing asked"
+pass "unplug ends the choice; a charger asks nothing"
+
+plug SDP; d
+[[ $(st ask) == 1 && $(st prompt) != "$p1" ]] || fail "a new connection asks again, as a new question ($(st prompt))"
+echo "Unknown [Unknown] DCP CDP" > "$P/usb_type"; send "mode network"; d
+[[ -z $(udc) ]] || fail "a request without a computer at the port is ignored"
+plug SDP; send "mode network"; d
+echo "[Unknown] SDP DCP CDP" > "$P/usb_type"; d     # detection reads something else for a moment
+[[ $(st choice) == network && -z $(udc) ]] || fail "a moment's other reading keeps the choice, data off"
+plug SDP; d; [[ $(udc) == a600000.usb ]] || fail "and the computer gets it back"
+pass "a choice lasts the connection, not a moment's other detection"
+
+# ---------------------------------------------------------------- MTP
+: > "$f/ops"; send "mode files"; d
+[[ $(udc) == a600000.usb && $(links) == "ffs.mtp " && $(st mode) == files ]] || fail "file transfer: MTP alone ($(links) $(st mode))"
+[[ -d $G/functions/ffs.mtp ]] || fail "the FunctionFS instance exists"
+grep -q "mount -t functionfs -o uid=$uid,gid=$gid,rmode=0700,fmode=0600 mtp $f/run/ffs" "$f/ops" || fail "FunctionFS mounted for the user ($(cat "$f/ops"))"
+grep -qx "start omamobile-usb-mtp@owner.service" "$f/ops" || fail "umtprd started as the session's user"
+m=$f/run/umtprd.conf
+grep -qxF "storage \"$f/home/Pictures\" \"Pictures\" \"rw\"" "$m" && grep -qxF "storage \"$f/home/Documents\" \"Documents\" \"rw\"" "$m" \
+  || fail "the media folders are shared"
+grep -q "Music\|\.ssh\|storage \"$f/home\" " "$m" && fail "never the home, its dotfiles or a folder that leads out of it"
+grep -qxF "usb_dev_path \"$f/run/ffs/ep0\"" "$m" && grep -qxF 'show_hidden_files 0x0' "$m" && grep -qxF 'product "OnePlus 7T Pro"' "$m" \
+  || fail "umtprd's configuration"
+pass "file transfer: FunctionFS for the user, umtprd as the user, only the media folders"
+
+send "mode both"; d
+[[ $(links) == "acm.GS0 ffs.mtp ncm.usb0 " && $(st mode) == both ]] || fail "both ($(links))"
+send "mode charge"; d
+[[ -z $(udc) && ! -e $f/mtp-active ]] || fail "charge stops umtprd"
+touch "$f/mtp-broken"; : > "$f/ops"; send "mode both"; d
+[[ $(st mode) == network && $(links) == "acm.GS0 ncm.usb0 " && $(udc) == a600000.usb ]] || fail "MTP failing leaves both at the network ($(st mode))"
+touch -d '2000-01-01' "$G/UDC"; d; d
+[[ $(grep -c "^start" "$f/ops") == 1 && $(stat -c %Y "$G/UDC") == $(date -d 2000-01-01 +%s) ]] \
+  || fail "a failed MTP start isn't tried again at every look, nor the gadget rebound ($(grep -c "^start" "$f/ops") starts)"
+rm -f "$f/mtp-broken"; send "mode both"; d
+[[ $(st mode) == both ]] || fail "choosing again tries MTP again"
+lock; d; [[ -z $(udc) && ! -e $f/mtp-active ]] || fail "a lock stops file transfer"
+pass "both, charge, a failing MTP and a lock"
+
+# ---------------------------------------------------------------- settings
+printf 'LOCKED=keep\nUNLOCKED=ask\n' > "$C"; unlock; send "mode network"; d; lock; d
+[[ $(udc) == a600000.usb && $(st policy) == locked ]] || fail "LOCKED=keep leaves USB up while locked"
+[[ $(cat "$B/usb1/authorized_default") == 1 ]] || fail "LOCKED=keep leaves host ports open"
+printf 'LOCKED=off\nUNLOCKED=network # bring-up\n' > "$C"; unplug; d; unlock; plug SDP; d
+[[ $(st mode) == network && $(st ask) == 0 ]] || fail "UNLOCKED=network: no question"
+send ask; d
+[[ $(st ask) == 1 && -z $(udc) ]] || fail "omamobile-usb ask asks even with a default"
+send "mode files"; d; [[ $(st mode) == files && $(st ask) == 0 ]] || fail "and its answer holds"
+printf 'LOCKED=maybe\nUNLOCKED=$(touch %s/pwned)\n' "$f" > "$C"; d
+[[ ! -e $f/pwned ]] && grep -q "LOCKED=maybe ignored" "$f/log" || fail "the configuration is read, never run"
+printf 'LOCKED=off\nUNLOCKED=ask\n' > "$C"
+nosession; d
+[[ $(st policy) == locked && -z $(udc) ]] || fail "no session after one was seen: off"
+pass "LOCKED=keep, UNLOCKED defaults, ask, a configuration that isn't code, a session gone"
+
+# ---------------------------------------------------------------- stop
+unlock; unplug; d; plug SDP; d
+[[ -z $(udc) ]] || fail "charging only before the stop"
+( PATH=$f/bin:$PATH USB_GADGET=$G USB_UDC_CLASS=$f/udc USB_SUPPLY_CLASS=$f/supply USB_BUS_DEVICES=$B \
+  USB_RUN=$f/run USB_CONF=$C USB_FAKE_SESSION=$S USB_MONITORS=0 USB_TICK=1 exec lib/omamobile-usbd 2>> "$f/log" ) &
+dp=$!
+for _ in $(seq 1 50); do [[ -p $f/run/ctl && $(st ask) == 1 ]] && break; sleep 0.1; done
+lock; send tick; sleep 1.5; [[ $(st policy) == locked ]] || fail "the running daemon sees a lock"
+kill -TERM "$dp"; wait "$dp" || true
+[[ $(udc) == a600000.usb && $(links) == "acm.GS0 ncm.usb0 " && ! -e $f/run/state ]] || fail "a stop puts the USB network back ($(udc) $(links))"
+pass "the running daemon follows requests, and its stop puts the USB network back"
+
+# ---------------------------------------------------------------- prompt
+fb=$f/pbin; mkdir -p "$fb"
+cat > "$fb/notify-send" <<EOF
+#!/bin/bash
+echo "\$*" >> $f/notes
+[[ " \$* " == *" -p "* ]] && { echo 41; [[ -e $f/answer ]] && cat $f/answer; }
+exit 0
+EOF
+printf '#!/bin/bash\necho "$*" >> %s/cli\n' "$f" > "$fb/cli"
+chmod +x "$fb"/*
+pr() { PATH=$fb:$PATH USB_RUN=$f/run USB_CLI=$fb/cli USB_NOTIFY_SEND=$fb/notify-send XDG_RUNTIME_DIR=$f USB_ONCE=1 lib/omamobile-usb-prompt; }
+printf 'policy=unlocked\nhost=SDP\nmode=charge\nchoice=\nask=1\nforce=0\nprompt=3\nuser=owner\n' > "$f/run/state"
+echo files > "$f/answer"; pr
+grep -q -- '-u critical' "$f/notes" && grep -q 'network=SSH & network' "$f/notes" && grep -q 'files=File transfer' "$f/notes" \
+  && grep -q 'both=Both' "$f/notes" || fail "the prompt offers SSH & network, file transfer and both, until answered ($(cat "$f/notes"))"
+[[ $(cat "$f/cli") == "mode files" ]] || fail "the answer goes to the daemon ($(cat "$f/cli" 2>/dev/null))"
+: > "$f/notes"; rm -f "$f/cli" "$f/answer"
+printf 'policy=locked\nhost=SDP\nmode=charge\nchoice=\nask=0\nforce=0\nprompt=3\nuser=owner\n' > "$f/run/state"; pr
+[[ ! -s $f/notes && ! -e $f/cli ]] || fail "no question while locked"
+grep -q 'read_state || { close_prompt; shown=""; return; }' lib/omamobile-usb-prompt || fail "a stopped daemon's questions are forgotten"
+pass "the prompt asks once, critical, and hands the answer to the daemon"
+
+# ---------------------------------------------------------------- CLI
+cli() { USB_RUN=$f/run bin/omamobile-usb "$@"; }
+printf 'policy=locked\nhost=SDP\nmode=charge\nchoice=\nask=0\nforce=0\nprompt=3\nuser=owner\n' > "$f/run/state"
+cli status | grep -cx 'Session: locked (no USB data)' >/dev/null || fail "status"
+out=$(cli mode network 2>&1) && fail "mode while locked succeeds"
+[[ $out == *"locked"* ]] || fail "mode while locked says why"
+printf 'policy=unlocked\nhost=DCP\nmode=charge\nchoice=\nask=0\nforce=0\nprompt=3\nuser=owner\n' > "$f/run/state"
+out=$(cli mode files 2>&1) && fail "mode at a charger succeeds"
+[[ $out == *"no computer"* ]] || fail "mode at a charger says why"
+cli mode sideways >/dev/null 2>&1 && fail "an unknown mode is refused"
+pass "the CLI: status, and refusals while locked, at a charger, for an unknown mode"

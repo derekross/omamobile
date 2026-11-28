@@ -1,0 +1,16 @@
+Run as an unprivileged user: ask for at most 10 messages on the command
+queue. mq_open() refuses more than fs.mqueue.msg_max (10 by default) to a
+process without CAP_SYS_RESOURCE with EINVAL, so umtprd exited at once when
+run as the session's user. The queue only carries "umtprd -cmd:" commands.
+
+--- a/src/msgqueue.c
++++ b/src/msgqueue.c
+@@ -58,7 +58,7 @@
+ 
+ static struct mq_attr qattrs = {
+   0,  // flags
+-  20, // max number of messages on the queue
++  10, // max number of messages on the queue (fs.mqueue.msg_max for a user)
+   MAX_MSG_SIZE,
+   0   // number of messages currently on the queue
+ };

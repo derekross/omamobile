@@ -1,0 +1,95 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# omamobile-usb-prompt: the session's side of omamobile-usbd. When an
+# unlocked phone is plugged into a computer, it asks in a notification what
+# the computer may use: "SSH & network", "File transfer" or "Both". No
+# answer, or a dismissed notification, leaves the phone charging only
+# (omamobile-usb ask brings the question back). The notification is critical,
+# so it stays up until answered, and it is withdrawn when the question no
+# longer stands: the phone locked, the cable came out, or the choice was
+# made elsewhere (omamobile-usb mode). A mode that turns on gets a short
+# notice.
+#
+# It reads /run/omamobile/usb/state as it changes (inotify) and asks once
+# per question (the state's prompt counter). USB_RUN and USB_CLI point it at
+# a test's state folder and CLI; USB_NOTIFY_SEND at a fake notify-send.
+set -uo pipefail
+RUN=${USB_RUN:-/run/omamobile/usb}
+CLI=${USB_CLI:-omamobile-usb}
+NOTIFY=${USB_NOTIFY_SEND:-notify-send}
+OUT=${XDG_RUNTIME_DIR:-/tmp}/omamobile-usb-prompt
+
+shown="" pid="" last_mode=""
+declare -A S=()
+
+read_state() {
+  S=()
+  local k v
+  [[ -r $RUN/state ]] || return 1
+  while IFS='=' read -r k v; do S[$k]=$v; done < "$RUN/state"
+}
+
+close_prompt() {
+  [[ -n $pid ]] || return 0
+  local id
+  id=$(sed -n 1p "$OUT.$shown" 2>/dev/null)
+  [[ $id =~ ^[0-9]+$ ]] && gdbus call --session --dest org.freedesktop.Notifications \
+    --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.CloseNotification "$id" >/dev/null 2>&1
+  # notify-send ends when its notification closes; one that doesn't is ended
+  sleep 0.2
+  pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null
+  rm -f "$OUT.$shown"
+  pid=""
+}
+
+show_prompt() {
+  local n=$1
+  (
+    "$NOTIFY" -a "USB" -i drive-removable-media -u critical -p \
+      -h string:x-omamobile-usb:prompt \
+      -A network="SSH & network" -A files="File transfer" -A both="Both" \
+      "Connected to a computer" "Charging only. Allow the computer to use:" > "$OUT.$n" 2>/dev/null
+    act=$(sed -n 2p "$OUT.$n" 2>/dev/null)
+    rm -f "$OUT.$n"
+    case $act in network|files|both) "$CLI" mode "$act" >/dev/null ;; esac
+  ) &
+  pid=$!
+}
+
+notice() {
+  local what
+  case $1 in network) what="SSH & network" ;; files) what="File transfer" ;; both) what="SSH & network and file transfer" ;; *) return ;; esac
+  "$NOTIFY" -a "USB" -i drive-removable-media -e -t 4000 "USB: $what on" \
+    "Until the phone locks or the cable comes out" >/dev/null 2>&1 &
+}
+
+handle() {
+  # No state: the daemon stopped, and the next one's questions are all new
+  read_state || { close_prompt; shown=""; return; }
+  if [[ ${S[ask]:-0} == 1 ]]; then
+    # Once per question: an answered or dismissed one isn't asked again
+    if [[ ${S[prompt]:-} != "$shown" ]]; then
+      close_prompt
+      shown=${S[prompt]:-}
+      show_prompt "$shown"
+    fi
+  else
+    close_prompt
+  fi
+  if [[ ${S[mode]:-} != "$last_mode" ]]; then
+    [[ -n $last_mode && ${S[policy]:-} == unlocked ]] && notice "${S[mode]:-}"
+    last_mode=${S[mode]:-}
+  fi
+}
+
+trap 'close_prompt; exit 0' TERM INT
+if [[ ${USB_ONCE:-0} == 1 ]]; then handle; wait; exit 0; fi
+[[ -d $RUN ]] || { echo "omamobile-usb-prompt: no $RUN (is omamobile-usb running?)" >&2; exit 1; }
+# The state's first reading is a baseline: no notice for a mode already on
+read_state && { last_mode=${S[mode]:-}; [[ ${S[ask]:-0} == 1 ]] || shown=${S[prompt]:-}; }
+handle
+while IFS= read -r f; do
+  [[ $f == state ]] && handle
+done < <(inotifywait -m -q -e moved_to -e close_write -e delete --format '%f' "$RUN" 2>/dev/null)
+exit 1

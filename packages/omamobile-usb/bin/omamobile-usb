@@ -1,0 +1,77 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# omamobile-usb: what the phone's USB port gives a computer (omamobile-usbd).
+#
+#   omamobile-usb [status]   the lock, what is at the port and the USB mode
+#   omamobile-usb mode MODE  for this connection: charge (no data), network
+#                            (SSH and the USB network), files (MTP) or both;
+#                            only while unlocked and a computer is plugged in
+#   omamobile-usb ask        ask again, in a notification
+#
+# The session's user and root may ask; the daemon decides, and turns data
+# off whenever the phone locks. USB_RUN points it at another state folder.
+set -uo pipefail
+RUN=${USB_RUN:-/run/omamobile/usb}
+
+usage() { sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+declare -A S=()
+read_state() {
+  S=()
+  local k v
+  [[ -r $RUN/state ]] || return 1
+  while IFS='=' read -r k v; do S[$k]=$v; done < "$RUN/state"
+}
+
+label() {
+  case $1 in
+    charge) echo "charging only" ;; network) echo "SSH & network" ;;
+    files) echo "file transfer" ;; both) echo "SSH & network, file transfer" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+send() {
+  [[ -p $RUN/ctl ]] || { echo "omamobile-usb: the USB service isn't running (systemctl status omamobile-usb)" >&2; exit 1; }
+  timeout 3 bash -c 'printf "%s\n" "$1" > "$2"' _ "$1" "$RUN/ctl" 2>/dev/null \
+    || { echo "omamobile-usb: can't reach the USB service (only the session's user and root may ask)" >&2; exit 1; }
+}
+
+case ${1:-status} in
+  status)
+    read_state || { echo "omamobile-usb: the USB service isn't running"; exit 1; }
+    case ${S[policy]} in
+      boot) echo "Session: not started yet (USB left as the boot set it up)" ;;
+      locked) echo "Session: locked (no USB data)" ;;
+      unlocked) echo "Session: unlocked" ;;
+      *) echo "Session: ${S[policy]}" ;;
+    esac
+    case ${S[host]} in
+      SDP|CDP) echo "Port: a computer (${S[host]})" ;;
+      DCP) echo "Port: a charger" ;;
+      none) echo "Port: nothing plugged in" ;;
+      unknown) echo "Port: unknown (no USB power supply found)" ;;
+      *) echo "Port: ${S[host]}" ;;
+    esac
+    echo "USB: $(label "${S[mode]}")"
+    [[ ${S[ask]} == 1 ]] && echo "Waiting for a choice in the notification (omamobile-usb mode MODE)"
+    exit 0 ;;
+  mode)
+    m=${2:-}
+    case $m in charge|network|files|both) ;; *) usage ;; esac
+    read_state || { echo "omamobile-usb: the USB service isn't running" >&2; exit 1; }
+    [[ ${S[policy]} == locked ]] && { echo "omamobile-usb: the phone is locked: no USB data until it's unlocked" >&2; exit 1; }
+    [[ ${S[host]} == SDP || ${S[host]} == CDP || ${S[host]} == unknown ]] \
+      || { echo "omamobile-usb: no computer at the port" >&2; exit 1; }
+    send "mode $m"
+    for _ in $(seq 1 40); do
+      sleep 0.25
+      read_state && [[ ${S[choice]} == "$m" && ${S[mode]} == "$m" ]] && { echo "USB: $(label "$m")"; exit 0; }
+    done
+    read_state
+    echo "omamobile-usb: asked for $(label "$m"), USB is $(label "${S[mode]:-?}") (journalctl -u omamobile-usb)" >&2
+    exit 1 ;;
+  ask) send ask ;;
+  -h|--help|help) usage ;;
+  *) usage ;;
+esac
