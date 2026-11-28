@@ -72,6 +72,21 @@ test("no entry: the title, then the class, then App", () => {
   assert.strictEqual(M.appName("x", "t", [{ id: "x", name: "" }]), "t", "an entry with no name")
 })
 
+test("the cards are in last-used order", () => {
+  const a = { n: "a" }, b = { n: "b" }, c = { n: "c" }, d = { n: "d" }
+  const open = [a, b, c, d] // oldest window first
+  const names = (list) => list.map((w) => w.n).join("")
+  assert.strictEqual(names(M.byLastUse(open, [b, d, a, c])), "bdac", "as used, whatever was opened when")
+  assert.strictEqual(names(M.byLastUse(open, [])), "dcba", "nothing seen yet: the newest window first")
+  assert.strictEqual(names(M.byLastUse(open, [a])), "adcb", "the one used, then the rest, newest first")
+  const rank = (w) => ({ a: 2, b: 0, c: -1, d: 1 })[w.n]
+  assert.strictEqual(names(M.byLastUse(open, [], rank)), "bdac", "unseen windows by Hyprland's focus history, those without a place last")
+  assert.strictEqual(names(M.byLastUse(open, [c], rank)), "cbda", "what the switcher saw comes before Hyprland's history")
+  const closed = { n: "x" }
+  assert.strictEqual(names(M.byLastUse(open, [closed, b, b, a])), "badc", "a closed window is left out, a repeat counted once")
+  assert.strictEqual(names(M.byLastUse([], [a])), "")
+})
+
 let failed = 0
 for (const [name, fn] of tests) {
   try { fn(); console.log("ok - switcher model: " + name) } catch (e) { failed++; console.log("not ok - switcher model: " + name + "\n  " + (e.stack || e)) }

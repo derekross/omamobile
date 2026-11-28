@@ -127,6 +127,31 @@ function appName(appId, title, entries) {
   return c || "App"
 }
 
+// The cards' order: last used first. `open` is the open windows, oldest
+// first (the Wayland foreign-toplevel list's order); `used` is the windows by
+// when each last had the focus, the latest first, as the switcher has seen
+// it; `rank(window)` is Hyprland's place for a window in its own focus
+// history (0 the latest, -1 unknown). Windows in `used` come first, in that
+// order; the others follow by rank, and those without one last, the newest
+// window first. A window in `used` that is no longer open is left out.
+function byLastUse(open, used, rank) {
+  var list = []
+  var seen = []
+  var i
+  for (i = 0; i < (used || []).length; i++) {
+    if (open.indexOf(used[i]) >= 0 && seen.indexOf(used[i]) < 0) { list.push(used[i]); seen.push(used[i]) }
+  }
+  var rest = []
+  for (i = open.length - 1; i >= 0; i--) {
+    if (seen.indexOf(open[i]) >= 0) continue
+    var r = typeof rank === "function" ? Number(rank(open[i])) : -1
+    rest.push({ window: open[i], rank: isFinite(r) && r >= 0 ? r : Infinity, age: rest.length })
+  }
+  rest.sort(function(a, b) { return a.rank !== b.rank ? a.rank - b.rank : a.age - b.age })
+  for (i = 0; i < rest.length; i++) list.push(rest[i].window)
+  return list
+}
+
 if (typeof module !== "undefined") {
-  module.exports = { entryFor: entryFor, appName: appName, webAppKey: webAppKey, webAppUrl: webAppUrl }
+  module.exports = { entryFor: entryFor, appName: appName, webAppKey: webAppKey, webAppUrl: webAppUrl, byLastUse: byLastUse }
 }

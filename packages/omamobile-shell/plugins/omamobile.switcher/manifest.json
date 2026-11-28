@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "author": "Omamobile",
   "license": "MIT",
-  "description": "Android-style recent apps: swipe up from the dock to see open windows as cards. Tap one to switch to it, flick it up to close it, hold it to show it with another app or move it back to its own screen, or go home.",
+  "description": "Android-style recent apps: swipe up from the dock to see open windows as cards, the last used first. Tap one to switch to it, flick it up to close it, hold it to show it with another app or move it back to its own screen, or go home.",
   "kinds": [
     "panel"
   ],

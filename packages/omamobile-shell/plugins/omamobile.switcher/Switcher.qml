@@ -42,12 +42,42 @@ Item {
 
   property bool opened: false
 
-  // Newest first, like Android's recents.
-  readonly property var windows: {
-    var list = ToplevelManager.toplevels.values.slice()
-    list.reverse()
-    return list
+  // Last used first, as iOS's app switcher and Android's recents order
+  // their cards: `used` is the windows by when each last had the focus, the
+  // latest first. A window that hasn't had it since the shell started comes
+  // after those, by Hyprland's own focus history where it is known, else the
+  // newest window first (SwitcherModel.byLastUse).
+  property var used: []
+
+  function noteUse(toplevel) {
+    if (!toplevel || used[0] === toplevel) return
+    var open = ToplevelManager.toplevels.values
+    var next = [toplevel]
+    for (var i = 0; i < used.length; i++)
+      if (used[i] !== toplevel && open.indexOf(used[i]) >= 0) next.push(used[i])
+    used = next
   }
+
+  Connections {
+    target: ToplevelManager
+    function onActiveToplevelChanged() { root.noteUse(ToplevelManager.activeToplevel) }
+  }
+
+  Component.onCompleted: {
+    Hyprland.refreshToplevels()
+    noteUse(ToplevelManager.activeToplevel)
+  }
+
+  // Hyprland counts a window's place in its focus history from 0, the
+  // window that has the focus; -1 where it doesn't say.
+  function focusRank(toplevel) {
+    var hypr = hyprlandFor(toplevel)
+    var ipc = hypr ? (hypr.lastIpcObject || ({})) : ({})
+    var rank = Number(ipc.focusHistoryID)
+    return isFinite(rank) && rank >= 0 ? rank : -1
+  }
+
+  readonly property var windows: SwitcherModel.byLastUse(ToplevelManager.toplevels.values, used, focusRank)
 
   // Host lifecycle (`shell summon` / `shell hide`).
   function open(payloadJson) {
