@@ -3,6 +3,33 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-571. An allow line added because "Waydroid binds it" is checked for what
+  the node lets the container do to the host.** #493's `/dev/uhid` creates HID
+  devices that the host compositor reads, which is a way to inject input into
+  the host session; Android booted without it and logged nothing about it.
+  *Check:* for each new `lxc.cgroup2.devices.allow`, name the host object that
+  opening the node creates or reaches (uhid and uinput are host input, `kvm`
+  host CPU state, `mem` and `port` host memory and I/O), and ask for a failing
+  Android feature without it before it goes in. Extends L-540 and L-454.
+  *From:* #493, round 45, 2026-11-08.
+- **L-572. A lock added to an input handler is checked for what a holder that
+  hangs does to every later press.** #508's `flock` without `-w` made a stuck
+  short-press action freeze the power key for the session, where main would
+  have let the next press through. *Check:* for any new `flock`, mutex or
+  queue in a key, touch or wake path, run the PR's harness with the slowest
+  helper made to sleep past the press interval, measure when the next press
+  acts on main and on the head, and ask for a bound. Extends L-161 (fail
+  towards the user being able to act). *From:* #508, round 45, 2026-11-08.
+- **L-573. Deferring a surface's "on open" reads is checked against what the
+  surface shows first and what refreshes it while it's closed.** #518 queued
+  the shade's notification read ninth, behind the reveal, and the shade's
+  periodic read runs only while it's open (`running: root.opened`, first tick
+  at 3 s), so every open showed the previous open's list for about 0.65 s.
+  *Check:* for each read moved off the open path, `grep -n` its function for
+  the timers and watchers that call it, note their `running:` condition, and
+  compute when the first fresh value appears after opening; ask that what the
+  first screen shows goes first. Extends L-235. *From:* #518, round 45,
+  2026-11-08.
 - **L-574. (Provisional, not yet checked on a phone.) A network-sharing
   feature is checked against the firewall the image turns on.** #525 makes the
   hotspot's dnsmasq start, but firstboot's ufw denies incoming and forwarded

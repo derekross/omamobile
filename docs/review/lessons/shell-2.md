@@ -3,6 +3,23 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-984. An indicator driven by an event stream with no "removed" event is
+  walked through the disconnect.** #949 reads devices on a new keyboard's
+  first event, and Hyprland's socket never says a keyboard left, so the label
+  outlives the keyboard. *Check:* for each state a PR sets from an event, name
+  the event that clears it; if none exists, ask for a bounded re-read while
+  the state shows. Extends L-235 and L-614. *From:* #949, round 63,
+  2026-11-20.
+- **L-983. A "hardware keyboard" test by device name is checked against the
+  names the phones' own keys have, and against a sibling PR that answers the
+  same question another way.** #949 filters Hyprland's keyboards with a name
+  list (`gpio-keys`, `power-button`, ...) taken from a desktop widget, while
+  #866 from the same author counts real keyboards by bus and key capabilities;
+  a phone key under another name would make the bar label permanent. *Check:*
+  ask for `hyprctl -j devices` keyboard names from each supported phone with
+  nothing attached, and `git grep -n 'ID_INPUT_KEYBOARD\|bustype\|untyped'`
+  over the author's open heads for a second definition. Extends L-469 and
+  L-720. *From:* #949 with #866, round 63, 2026-11-20.
 - **L-982. A test that waits for a background job with `kill -0` hangs in CI's
   container.** A job reparented to the container's PID 1 is never reaped, and
   `kill -0` succeeds on a zombie; #866's race test waited forever in CI and
@@ -354,14 +371,3 @@ Part of [the review lessons](../LESSONS.md), which says how they are used and ho
 - **L-736. A window rule that floats a fixed-size dialog is tested with the window's `at` and `size` and a screenshot, on the narrowest phone.** #602's rule passed its Lua test ("floating, centred, not maximized"), but on the 405 px wide 9a the 634 and 729 px dialogs sat at x = -229 and -324 with controls off screen, and a floating window can't be dragged back. *Check:* for any rule that takes a window out of maximize, ask for `hyprctl -j clients` and a screenshot of the widest dialog; a negative `at.x`, or `at.x + size.w` past the screen, hides controls. *From:* #602, round 51, 2026-11-11.
 - **L-735. A secret taken from the environment is removed from the environment the tool hands to its children.** #652 passed its sudo password variable on to a terminal it keeps open for an hour. *Check:* for any `*_PW` or `*_TOKEN` variable, find every `env=` and `Popen`; for `sudo -S`, ask what reads the piped password when sudo already has a ticket and asks nothing. *From:* #652, round 51, 2026-11-11.
 - **L-734. A tool whose cleanup lives in `try/finally` is checked for the signals that skip it, SIGHUP first.** #652 handled Ctrl-C and SIGTERM, but a dropped SSH session, the likely failure on a phone whose only link is USB, sends SIGHUP, and Python then exits without `finally`: do-not-disturb would stay on with nothing to notice it. *Check:* `grep -n 'signal\.\|trap ' <tool>`, list each state the tool changes, and ask for a leftover check at start. Extends L-468 and L-613. *From:* #652, round 51, 2026-11-11.
-- **L-733. A script that changes a safety setting sets its restore trap first, and every early `exit` is read against what has already been changed.** #659 turned the runtime watchdog off and `panic_on_rcu_stall` on 20 lines above a refusal and 35 lines above `trap restore EXIT`, and its restore put back one of the five switches. *Check:* list each write to `/proc/sys`, `/sys/power`, tracefs or systemd's manager properties with its line, then the line of the trap and of every `exit` between them, and tick each write off in the restore function. Extends L-613 and L-468. *From:* #659, round 51, 2026-11-11.
-- **L-716. A check whose input can fail to be read is walked for what the
-  failed read decides.** #596's `cpio -it 2>/dev/null | grep -c … || true`
-  read a broken archive as "no keys" (key appended, then flashed) and a late
-  failure as "keys present"; `extract-vendor-firmware` compares
-  `ro.product.vendor.device` only `if` `build.prop` could be read, so a failed
-  read stages another phone's firmware. *Check:* take the producer's status
-  alone (`out=$(cmd) || die`), test the text from a here-string, try a
-  truncated input, and grep `if get_file` and `2>/dev/null` above each
-  compare. Extends L-161 and L-635. *From:* #623 (after #596) and #625, round
-  50.

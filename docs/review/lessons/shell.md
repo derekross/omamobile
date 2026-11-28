@@ -3,6 +3,23 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-1240. A QML "in view" check names the item it measures against.**
+  `intro->mapToScene(QPointF(0, 0)).y() >= 0` in #1030's test only says the
+  intro starts inside the window; the page sits under a title row, so a cut of
+  that row's height (about 34 px) inside the page would still pass. *Check:*
+  for any visibility assertion in a Qt test, name the item it is measured
+  against (window, page or flickable) and compare with the coordinates of the
+  clip that would cut it (`mapToItem(<that item>, ...)`). Extends L-454.
+  *From:* #1030, round 70, 2026-11-28.
+- **L-1238. A wrapper that adds a stop signal to helpers is read for what each
+  helper does on that signal, because a cleanup that never ran before now
+  runs.** #998's parent-death TERM reaches `omamobile-bt-agent`, whose
+  `finally` turns Pairable off; before, a crashed shell left the agent running
+  with the pairing window open. *Check:* for each command a wrapper PR wraps,
+  `grep -n 'signal\|SIGTERM\|finally\|atexit' <helper>` and write down what
+  its exit path changes (a radio, a lock, a file), then list which of those
+  used to be skipped on a crash; put the most consequential one in the phone
+  run. Extends L-734 and L-1169. *From:* #998 with #1089, round 69.
 - **L-1184. A change that makes a daemon offer a mode it didn't offer before
   is read against what upstream's own scripts pick when that mode appears.**
   #1045's stand-in driver adds `performance`, and Omarchy's
@@ -397,20 +414,3 @@ Part of [the review lessons](../LESSONS.md), which says how they are used and ho
   read-only) and print what it sees before blaming the code or the runner;
   `bash -c 'exec 9<>/dev/ptmx; readlink /proc/$$/fd/9'` shows the two
   spellings. Extends L-674 and L-454. *From:* #954, round 63, 2026-11-20.
-- **L-984. An indicator driven by an event stream with no "removed" event is
-  walked through the disconnect.** #949 reads devices on a new keyboard's
-  first event, and Hyprland's socket never says a keyboard left, so the label
-  outlives the keyboard. *Check:* for each state a PR sets from an event, name
-  the event that clears it; if none exists, ask for a bounded re-read while
-  the state shows. Extends L-235 and L-614. *From:* #949, round 63,
-  2026-11-20.
-- **L-983. A "hardware keyboard" test by device name is checked against the
-  names the phones' own keys have, and against a sibling PR that answers the
-  same question another way.** #949 filters Hyprland's keyboards with a name
-  list (`gpio-keys`, `power-button`, ...) taken from a desktop widget, while
-  #866 from the same author counts real keyboards by bus and key capabilities;
-  a phone key under another name would make the bar label permanent. *Check:*
-  ask for `hyprctl -j devices` keyboard names from each supported phone with
-  nothing attached, and `git grep -n 'ID_INPUT_KEYBOARD\|bustype\|untyped'`
-  over the author's open heads for a second definition. Extends L-469 and
-  L-720. *From:* #949 with #866, round 63, 2026-11-20.
