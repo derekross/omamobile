@@ -9268,6 +9268,53 @@ Keep the mux and frame-start status reads disabled in mainline,
 the frame-start IRQ masked, and DSI0 host and PHY TX reads
 disabled. This audit used saved artifacts only.
 
+###### Offline stock D1 wrapper-plus-BE mux fixture
+
+The fixture boots the exact stock D1 kernel and keeps the
+stock NV guard and independent 90-second return. It uses the
+CID overlay's exclusions for both DSI hosts, both PHYs and
+the DP encoder, and also disables stock DC9x00 and its display
+subsystem. The ramdisk has no display module manifest. An
+isolated platform node describes just `0x0f6d4004` (four
+bytes), stock `dpu_be_pd` and SGIA `0x0f46e020` input 4.
+Its sampler pins BE through genpd, which holds the wrapper
+parent. It does not issue direct MBFS writes.
+
+PID 1 validates the disabled nodes, the sampler's resource
+and IRQ cells and the packaged module hash after the NV
+guard. It reads the stock AP client's seven MBFS vote states
+through read-only debugfs. Before arming, BE and all five
+other child votes must be zero. Wrapper may be inherited.
+At the read checkpoint, wrapper and BE must be 1 and DSI0,
+DSI1, FE0, FE1 and DP0 must all be 0. These values describe
+the AP client's votes. They leave other clients and the
+physical child power states unverified.
+
+The module reserves frame-start with `IRQF_NO_AUTOEN`.
+Its explicit one-shot operation checks the SGIA leaf's mask
+state while wrapper and BE are held, logs the attempted
+address, reads the mux once and logs the result and
+monotonic timestamp. It introduces no BE write, isolation
+change, IRQ enable, DSI host access or PHY TX access. On
+cleanup it releases the IRQ before dropping the runtime PM
+reference. PID 1 checks BE and the child votes after removal.
+
+The exact stock module ABI checks matched all 25 imports
+and 26 version CRCs. QEMU with the unmodified D1 kernel
+verified module admission, an unarmed read refusal and
+clean unload without a BE device. The host mock checked
+the vote, IRQ route, armed state and module hash guards.
+The five-image bundle passed offline image verification.
+The three reused factory images match byte for byte, and
+only Grizzly B0 entry 19 changed in the 55-entry DTBO.
+The bundle's `SHA256SUMS` digest is
+`c5fd99f421c1e785e102b0e2bd6b29f6c82b86129ede246404a5d3e610622418`.
+The hardware access remains untested. A valid mux read
+would qualify only this word in the recorded vote state.
+It would leave frame-start status and external reset
+coverage open. A later hardware trial requires a fresh
+guarded NV backup and the stock A return plan.
+
 ###### Mainline DSI0 readiness after stock connector registration
 
 The mainline prerequisite fixture at kernel

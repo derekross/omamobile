@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: MIT
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            fragment@grizzly-be-csr-inventory {
+                target-path = "/sswrp_dpu@f400000";
+                __overlay__ {
+                    dc9x00@200000 { status = "disabled"; };
+                    display-subsystem { status = "disabled"; };
+
+                    be-csr@2d4004 {
+                        compatible = "google,grizzly-stock-be-csr";
+                        reg = <0x2d4004 4>;
+                        // Exact D1 B0 phandles. The packer checks both.
+                        power-domains = <0xa3>;
+                        interrupts-extended = <0xc6 4>;
+                        interrupt-names = "frame-start";
+                    };
+                };
+            };
+        };
+    };
+};

@@ -56,6 +56,8 @@ DC_CID_EXCLUSIONS = (
     "dsi2host@3d8000", "dsi2host@3f8000", "dw_mipi_cdphy@3c0000",
     "dw_mipi_cdphy@3e0000", "dp-encoder",
 )
+DC_BE_CSR_NAME = "grizzly_stock_be_csr"
+DC_BE_CSR_SHA256 = "e57515175aa0a8a1c50d296bad6035da1d7b7f92765b2300356dcb1c419bd103"
 DSI0_PANEL_MODULES = (
     "i2c-designware-core.ko", "i2c-designware-platform.ko", "s2dos07x02-regulator.ko",
     "da9188-gpio.ko", "gs-panel.ko", "panel-gs-pkcgda.ko",
@@ -89,7 +91,33 @@ def without_display_status(dts, nodes, required_status=None):
     return dts
 
 
-def pack_display_dtbo(stock_dtbo, vendor_dtbs, baseline, temp, image, avbtool, dc_cid):
+def without_be_csr_node(dts, merged):
+    node = "/sswrp_dpu@f400000/be-csr@2d4004"
+    properties = {
+        "compatible": ("s", b"google,grizzly-stock-be-csr"),
+        "reg": ("x", b"2d4004 4"),
+        "power-domains": ("x", b"a3"),
+        "interrupts-extended": ("x", b"c6 4"),
+        "interrupt-names": ("s", b"frame-start"),
+    }
+    if set(capture("fdtget", "-p", merged, node).decode().splitlines()) != properties.keys():
+        raise ValueError("unexpected BE CSR sampler properties")
+    for property_name, (kind, expected) in properties.items():
+        if capture("fdtget", "-t", kind, merged, node, property_name).strip() != expected:
+            raise ValueError(f"unexpected BE CSR sampler {property_name}")
+    for provider, expected in (("/power_controller/dpu_be_pd", b"a3"),
+                               ("/dpu_multicast_aggr_1@f46e020", b"c6")):
+        if capture("fdtget", "-t", "x", merged, provider, "phandle").strip() != expected:
+            raise ValueError(f"unexpected BE CSR sampler phandle for {provider}")
+    if capture("fdtget", "-l", merged, node).strip():
+        raise ValueError("unexpected BE CSR sampler subnode")
+    normalized, count = re.subn(rb'\n\t\tbe-csr@2d4004 \{\n(?:\t\t\t[^\n]+\n)*\t\t\};\n', b'', dts)
+    if count != 1:
+        raise ValueError("expected exactly one BE CSR sampler node in the B0 tree")
+    return normalized
+
+
+def pack_display_dtbo(stock_dtbo, vendor_dtbs, baseline, temp, image, avbtool, dc_cid, dc_be_csr=False):
     # Pinned rescue DTBO and factory vendor-kernel DTB container.
     source = stock_dtbo.read_bytes()
     magic, total, header, stride, count, table, _, version = struct.unpack_from(">8I", source)
@@ -125,16 +153,30 @@ def pack_display_dtbo(stock_dtbo, vendor_dtbs, baseline, temp, image, avbtool, d
     source_name = "stock-dc-cid.dtso" if dc_cid else "stock-dsi0-dp-off.dtso"
     fragment = temp / "display-off.dtbo"
     capture("dtc", "-q", "-I", "dts", "-O", "dtb", "-o", fragment, HERE / source_name)
+    fragments = [fragment]
+    if dc_be_csr:
+        csr_fragment = temp / "be-csr.dtbo"
+        capture("dtc", "-q", "-I", "dts", "-O", "dtb", "-o", csr_fragment,
+                HERE / "stock-dc-be-csr.dtso")
+        fragments.append(csr_fragment)
     replacement = temp / "b0-display-off.dtbo"
-    capture("fdtoverlay", "-i", overlay, "-o", replacement, fragment)
+    capture("fdtoverlay", "-i", overlay, "-o", replacement, *fragments)
     merged = temp / "b0-display-off.dtb"
     capture("fdtoverlay", "-i", base, "-o", merged, replacement)
     old_dts = capture("dtc", "-q", "-s", "-I", "dtb", "-O", "dts", original)
     new_dts = capture("dtc", "-q", "-s", "-I", "dtb", "-O", "dts", merged)
     if dc_cid:
-        if (without_display_status(old_dts, DC_CID_EXCLUSIONS)
-                != without_display_status(new_dts, DC_CID_EXCLUSIONS, b"disabled")):
-            raise ValueError("B0 merged tree changed outside the DC CID exclusions")
+        exclusions = DC_CID_EXCLUSIONS
+        if dc_be_csr:
+            exclusions += ("dc9x00@200000", "display-subsystem")
+            for child in exclusions[-2:]:
+                node = f"/sswrp_dpu@f400000/{child}"
+                if capture("fdtget", "-t", "s", merged, node, "status").strip() != b"disabled":
+                    raise ValueError(f"expected disabled display node: {node}")
+            new_dts = without_be_csr_node(new_dts, merged)
+        if (without_display_status(old_dts, exclusions)
+                != without_display_status(new_dts, exclusions, b"disabled")):
+            raise ValueError("B0 merged tree changed outside the scoped display nodes")
     else:
         dp = b'\t\t\tcompatible = "verisilicon,dp-encoder";\n\t\t\tphandle = <0x520>;\n'
         if old_dts.count(dp) != 1 or new_dts != old_dts.replace(dp, dp + b'\t\t\tstatus = "disabled";\n', 1):
@@ -243,7 +285,13 @@ def pack(args):
                    or args.ufs_cpm_trace or args.ufs_uic_trace)
     dc_isolated_trace = args.dc_cid_trace or args.dc_be_trace
     display_trace = args.dsi0_trace or dc_isolated_trace
-    rescue_base = display_trace or args.ufs_uic_trace
+    scoped_display_tree = dc_isolated_trace or args.dc_be_csr is not None
+    rescue_base = display_trace or args.ufs_uic_trace or args.dc_be_csr is not None
+    dc_be_sampler = None
+    if args.dc_be_csr is not None:
+        dc_be_sampler = args.dc_be_csr.read_bytes()
+        if hashlib.sha256(dc_be_sampler).hexdigest() != DC_BE_CSR_SHA256:
+            raise ValueError("BE CSR sampler differs from the loader-verified D1 module")
     stock = {name: args.factory / f"{name}.img" for name in FACTORY}
     expected_images = FACTORY
     if rescue_base:
@@ -280,6 +328,10 @@ def pack(args):
         vendor_kernel_ramdisk = temp / "vendor_kernel_boot/vendor_ramdisk00"
         vendor_kernel_cpio = temp / "vendor-kernel.cpio"
         vendor_kernel_cpio.write_bytes(capture("lz4", "-dc", vendor_kernel_ramdisk))
+        if dc_be_sampler is not None or args.dc_be_trace:
+            controller = capture("bsdtar", "-xOf", vendor_kernel_cpio, "lib/modules/power_controller.ko")
+            if hashlib.sha256(controller).hexdigest() != DSI0_POWER_CONTROLLER_SHA256:
+                raise ValueError("factory power_controller.ko differs from the audited D1 module")
         if sampler is not None or args.ufs_uic_trace:
             ufs = capture("bsdtar", "-xOf", vendor_kernel_cpio, "lib/modules/ufs.ko")
             if hashlib.sha256(ufs).hexdigest() != STOCK_UFS_SHA256:
@@ -310,11 +362,21 @@ def pack(args):
             else:
                 write_payload(root / "stock-inventory.modules", manifest.encode(), 0o644)
                 archive_members.append("stock-inventory.modules")
-                if args.nv_guard_only or args.ufs_refclk_only or power_trace or args.usb2_test or display_trace:
+                if (args.nv_guard_only or args.ufs_refclk_only or power_trace or args.usb2_test
+                        or display_trace or dc_be_sampler is not None):
                     write_payload(root / "grizzly-inventory/nv-guard.sh",
                                   (HERE / "stock-nv-guard.sh").read_bytes(), 0o644)
-                if args.nv_guard_only or (display_trace and not args.ufs_uic_trace):
+                if (args.nv_guard_only or (display_trace and not args.ufs_uic_trace)
+                        or dc_be_sampler is not None):
                     write_payload(root / "grizzly-inventory/nv-guard-only", b"", 0o644)
+                if dc_be_sampler is not None:
+                    inventory = root / "grizzly-inventory"
+                    write_payload(inventory / "dc-be-csr", b"", 0o644)
+                    write_payload(inventory / "stock-dc-be-csr.sh",
+                                  (HERE / "stock-dc-be-csr.sh").read_bytes(), 0o644)
+                    write_payload(inventory / f"{DC_BE_CSR_NAME}.ko", dc_be_sampler, 0o400)
+                    digest_line = hashlib.sha256(dc_be_sampler).hexdigest() + "\n"
+                    write_payload(inventory / f"{DC_BE_CSR_NAME}.sha256", digest_line.encode(), 0o400)
                 if display_trace:
                     display_modules = DSI0_MODULES
                     if args.dsi0_panel_discovery:
@@ -333,10 +395,6 @@ def pack(args):
                             raise ValueError("factory vs_drm.ko differs from the audited DC module")
                         helper = "stock-dc-cid-trace.sh"
                         if args.dc_be_trace:
-                            controller = capture("bsdtar", "-xOf", vendor_kernel_cpio,
-                                                 "lib/modules/power_controller.ko")
-                            if hashlib.sha256(controller).hexdigest() != DSI0_POWER_CONTROLLER_SHA256:
-                                raise ValueError("factory power_controller.ko differs from the audited D1 module")
                             write_payload(root / "grizzly-inventory" / helper,
                                           (HERE / helper).read_bytes(), 0o644)
                             write_payload(root / "grizzly-inventory/dc-be-trace", b"", 0o644)
@@ -502,10 +560,10 @@ def pack(args):
         vendor_ramdisks.write_bytes(b"".join(fragment.read_bytes()
                                              for fragment in vendor_fragments))
         board_dtb = args.board_dtb
-        if args.dsi0_panel_dp_off or dc_isolated_trace:
+        if args.dsi0_panel_dp_off or scoped_display_tree:
             board_dtb = pack_display_dtbo(stock["dtbo"], temp / "vendor_kernel_boot/dtb",
                                          board_dtb, temp, images / "dtbo.img", args.avbtool,
-                                         dc_isolated_trace)
+                                         scoped_display_tree, dc_be_csr=dc_be_sampler is not None)
         bounds = capture(sys.executable, HERE / "check-handoff.py", kernel, board_dtb,
                          vendor_kernel_ramdisk, vendor_ramdisks, ramdisk,
                          "--packed-kernel", stock_kernel,
@@ -514,7 +572,7 @@ def pack(args):
 
     for name, path in stock.items():
         if name != "init_boot":
-            if name == "dtbo" and (args.dsi0_panel_dp_off or dc_isolated_trace):
+            if name == "dtbo" and (args.dsi0_panel_dp_off or scoped_display_tree):
                 continue
             if name == "dtbo" and isolation_dtbo:
                 path = isolation_dtbo
@@ -538,7 +596,9 @@ def pack(args):
               f"{count - len(preloads)} subsequent module requests.")
         if args.nv_guard_only:
             print("NV guard prototype verifies read-only state without exporting block data.")
-        if args.dc_be_trace:
+        if dc_be_sampler is not None:
+            print("Stock BE CSR probe uses the audited D1 power controller without loading display modules.")
+        elif args.dc_be_trace:
             print("Stock BE trace records existing DC accesses and supplier votes with DSI hosts and PHYs disabled.")
         elif args.dc_cid_trace:
             print("Stock DC CID trace arms before the guarded display load with DSI hosts and PHYs disabled.")
@@ -615,6 +675,8 @@ def main():
                       help="trace the stock DC customer ID with DSI host and PHY nodes disabled")
     mode.add_argument("--dc-be-trace", action="store_true",
                       help="trace stock BE register accesses and supplier votes with DSI hosts and PHYs disabled")
+    mode.add_argument("--dc-be-csr", type=Path, metavar="SAMPLER_KO",
+                      help="sample the stock BE CSR with a masked IRQ and display modules disabled")
     mode.add_argument("--ufs-refclk-only", action="store_true",
                       help="read the stock UFS device's reference-clock attribute after the NV guard")
     mode.add_argument("--ufs-power-trace", action="store_true",

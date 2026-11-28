@@ -986,6 +986,19 @@ if [ -e "$dsi0_manifest" ] || [ -L "$dsi0_manifest" ]; then
     fi
     stock_inventory_modules check "$dsi0_manifest" || end_inventory "DSI0 module manifest rejected"
 fi
+dc_be_csr_requested=no
+dc_be_csr_marker=/grizzly-inventory/dc-be-csr
+dc_be_csr_helper=/grizzly-inventory/stock-dc-be-csr.sh
+if [ -e "$dc_be_csr_marker" ] || [ -L "$dc_be_csr_marker" ]; then
+    if [ "$fixture" != inventory ] || [ "$nv_guard_requested" != yes ] ||
+       [ "$usb2_requested" = yes ] || [ "$refclk_requested" = yes ] ||
+       [ "$ufs_trace_requested" = yes ] || [ -e "$dsi0_manifest" ] || [ -L "$dsi0_manifest" ] ||
+       [ ! -f "$dc_be_csr_marker" ] || [ -L "$dc_be_csr_marker" ] ||
+       [ ! -f "$dc_be_csr_helper" ] || [ -L "$dc_be_csr_helper" ]; then
+        end_inventory "DC BE CSR fixture is ambiguous or incomplete"
+    fi
+    dc_be_csr_requested=yes
+fi
 if [ "$ufs_trace_requested" = yes ]; then
     # shellcheck source=stock-ufs-power-trace.sh
     . /grizzly-inventory/ufs-power-trace.sh
@@ -1052,6 +1065,12 @@ if stock_inventory_scan /sys/class/block yes; then
     if [ "$nv_guard_requested" = yes ]; then
         stock_nv_guard "$bb" /sys/class/block /proc/self/mountinfo /grizzly-inventory/nv-ro "$nv_snapshot_output" ||
             end_inventory "NV guard failed"
+        if [ "$dc_be_csr_requested" = yes ]; then
+            # shellcheck source=stock-dc-be-csr.sh
+            . "$dc_be_csr_helper"
+            stock_dc_be_csr_trace || end_inventory "DC BE CSR check incomplete after NV guard"
+            end_inventory "DC BE CSR sample and NV guard complete"
+        fi
         if [ "$dc_cid_requested" = yes ]; then
             # shellcheck source=stock-dc-cid-trace.sh
             . "$dsi0_helper"
