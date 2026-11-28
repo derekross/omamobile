@@ -3,6 +3,14 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-1240. A QML "in view" check names the item it measures against.**
+  `intro->mapToScene(QPointF(0, 0)).y() >= 0` in #1030's test only says the
+  intro starts inside the window; the page sits under a title row, so a cut of
+  that row's height (about 34 px) inside the page would still pass. *Check:*
+  for any visibility assertion in a Qt test, name the item it is measured
+  against (window, page or flickable) and compare with the coordinates of the
+  clip that would cut it (`mapToItem(<that item>, ...)`). Extends L-454.
+  *From:* #1030, round 70, 2026-11-28.
 - **L-1238. A wrapper that adds a stop signal to helpers is read for what each
   helper does on that signal, because a cleanup that never ran before now
   runs.** #998's parent-death TERM reaches `omamobile-bt-agent`, whose
@@ -406,10 +414,3 @@ Part of [the review lessons](../LESSONS.md), which says how they are used and ho
   read-only) and print what it sees before blaming the code or the runner;
   `bash -c 'exec 9<>/dev/ptmx; readlink /proc/$$/fd/9'` shows the two
   spellings. Extends L-674 and L-454. *From:* #954, round 63, 2026-11-20.
-- **L-984. An indicator driven by an event stream with no "removed" event is
-  walked through the disconnect.** #949 reads devices on a new keyboard's
-  first event, and Hyprland's socket never says a keyboard left, so the label
-  outlives the keyboard. *Check:* for each state a PR sets from an event, name
-  the event that clears it; if none exists, ask for a bounded re-read while
-  the state shows. Extends L-235 and L-614. *From:* #949, round 63,
-  2026-11-20.
