@@ -345,6 +345,8 @@ def real_package(t):
         ok(rc == 0, "real4.5: the series applies to a second root (%s)" % out.strip().splitlines()[-1])
         show_logo(t, root45, centred=True)
         about_layout(t, root45, tools=os.path.join(root45, "usr/bin"))
+        # logind's LockedHint follows the lock (0038, 4.5 family only)
+        lock_hint(root45)
         # The glance under qmltestrunner, on the family phones run
         lock_glance_run(root45, ex, "real4.5")
         return
@@ -689,6 +691,31 @@ def lock_battery(t, root):
     ok(out.returncode != 0 and took < 8 and got == "[false,false]",
        "real omarchy: a hung supply read ends through timeout(1) with no battery (0026: rc %s, %.1fs)"
        % (out.returncode, took))
+
+
+def lock_hint(root):
+    """Patch 0038: logind's LockedHint follows the lock. Static checks: the
+    hint is sent from currentlyLocked() at lock, unlock, start and any change
+    of the locked property, as SetLockedHint on the session "auto", and a
+    failed call isn't retried in a loop."""
+    service = read(root, "usr/share/omarchy/shell/plugins/lock/Service.qml")
+    sync = service.split("  function syncLockedHint() {", 1)
+    body = sync[1].split("\n  }", 1)[0] if len(sync) == 2 else ""
+    ok("var want = currentlyLocked()" in body and '"SetLockedHint", "b", want ? "true" : "false"' in body
+       and '"/org/freedesktop/login1/session/auto"' in body and "if (lockedHintProc.running) return" in body,
+       "real omarchy: the lock sends logind's LockedHint from its own state, one call at a time (0038)")
+    begin = service.split("  function beginLock() {", 1)[1].split("\n  }", 1)[0]
+    finish = service.split("  function finishUnlock() {", 1)[1].split("\n  }", 1)[0]
+    ok("onLockedChanged: syncLockedHint()" in service and "syncLockedHint()" in begin
+       and begin.find("lockRequested = true") < begin.find("syncLockedHint()")
+       and finish.find("sessionLock.locked = false") < finish.find("syncLockedHint()")
+       and "syncLockedHint()" in service.split("  Component.onCompleted: {", 1)[1].split("\n  }", 1)[0],
+       "real omarchy: the hint is set at lock, cleared at unlock and sent at start (0038)")
+    proc = service.split("    id: lockedHintProc", 1)
+    exited = proc[1].split("\n  }", 1)[0] if len(proc) == 2 else ""
+    ok("if (root.currentlyLocked() !== lockedHintProc.value) root.syncLockedHint()" in exited
+       and "root.lockedHintKnown = exitCode === 0" in exited,
+       "real omarchy: only a change made meanwhile is sent again, a failure isn't retried in a loop (0038)")
 
 
 def lock_media(root):
