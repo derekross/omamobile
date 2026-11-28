@@ -36,10 +36,27 @@ function networkIcon(kind, strength) {
   return "󰤮"
 }
 
-function cellularIcon(strength) {
-  if (strength < 0) return "󰞃"
-  var icons = ["󰢿", "󰢼", "󰢽", "󰢾"]
-  return icons[Math.max(0, Math.min(3, Math.floor(strength / 25.01)))]
+// The cellular symbols are these three kinds and no others (the owner's rule,
+// 2026-11-27; any new one needs his explicit say-so first): four bars with
+// none filled for no signal, four bars with one to four filled for a signal,
+// and the airplane for cellular turned off. Four bars is the standard, and
+// the icon font has no four-bar set, so the bars are drawn (CellBars.qml):
+// an icon string "cell-bars:N" stands for them wherever a glyph would go.
+var CELL_OFF = 0xF001D
+var CELL_BARS = "cell-bars:"
+
+// Bars filled for a 0-100 strength: none for no signal or no reading
+function cellLevel(strength) {
+  var n = Number(strength)
+  if (!(n > 0)) return 0
+  return Math.min(4, Math.floor(n / 25) + 1)
+}
+
+function cellularIcon(strength) { return CELL_BARS + cellLevel(strength) }
+function isCellBars(icon) { return typeof icon === "string" && icon.indexOf(CELL_BARS) === 0 }
+function cellBarsLevel(icon) {
+  var n = isCellBars(icon) ? parseInt(icon.slice(CELL_BARS.length), 10) : 0
+  return n >= 0 && n <= 4 ? n : 0
 }
 
 // The mobile network, from bin/omamobile-cell-watch's line: "" hides it.
@@ -47,14 +64,14 @@ function cellularIcon(strength) {
 function cellGlyph(cell) {
   if (!cell || !cell.modem || cell.state === "none") return ""
   switch (cell.state) {
-  case "off": return String.fromCodePoint(0xF001D)
-  case "no-sim": case "locked": case "failed": return String.fromCodePoint(0xF0783)
-  case "searching": return String.fromCodePoint(0xF08BF)
+  case "off": return String.fromCodePoint(CELL_OFF)
+  // SIM trouble, a failed modem and a search have no symbol of their own:
+  // there is no signal, and the words beside the bars say "No SIM" or "SIM
+  // locked".
+  case "no-sim": case "locked": case "failed": case "searching": return CELL_BARS + "0"
   }
-  // Mobile data off: the crossed-out bars, as quick settings' Mobile data
-  // tile shows it (calls and texts still work; the card says so).
-  if (cell.data === false) return String.fromCodePoint(0xF0783)
-  if (cell.strength < 0) return String.fromCodePoint(0xF08BF)
+  // Cellular data off changes nothing here: calls and texts still work, and
+  // the card says so.
   return cellularIcon(cell.strength)
 }
 
@@ -181,7 +198,7 @@ function batteryLow(percent, charging) {
 if (typeof module !== "undefined") {
   module.exports = {
     findDevice: findDevice, connectedNetwork: connectedNetwork, wifiIcon: wifiIcon, networkIcon: networkIcon,
-    cellularIcon: cellularIcon, cellGlyph: cellGlyph, cellText: cellText, parseCell: parseCell,
+    cellularIcon: cellularIcon, cellLevel: cellLevel, isCellBars: isCellBars, cellBarsLevel: cellBarsLevel, CELL_BARS: CELL_BARS, cellGlyph: cellGlyph, cellText: cellText, parseCell: parseCell,
     callChip: callChip, elapsed: elapsed, batteryIcon: batteryIcon,
     batteryStyle: batteryStyle, iconShown: iconShown, boltGlyph: boltGlyph, batteryLow: batteryLow,
     BATTERY_STYLES: BATTERY_STYLES, STATUS_ICONS: STATUS_ICONS,

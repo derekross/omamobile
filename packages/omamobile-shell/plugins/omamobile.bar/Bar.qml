@@ -505,7 +505,20 @@ Item {
               anchors.verticalCenter: parent.verticalCenter
               opacity: root.cell && root.cell.state === "searching" ? 0.55 : 1
 
-              StatusGlyph { text: root.cellGlyph }
+              StatusGlyph {
+                // The bars are drawn (CellBars.qml, the font has no four-bar set); a
+                // transparent glyph keeps the slot's size.
+                readonly property bool cellBars: root.cellGlyph.indexOf("cell-bars:") === 0
+                text: cellBars ? String.fromCodePoint(0xF001D) : root.cellGlyph
+                color: cellBars ? "transparent" : root.foreground
+                CellBars {
+                  anchors.centerIn: parent
+                  visible: parent.cellBars
+                  level: parent.cellBars ? (parseInt(root.cellGlyph.slice(10), 10) || 0) : 0
+                  color: root.foreground
+                  size: parent.font.pixelSize * 0.74
+                }
+              }
               Text {
                 visible: text !== ""
                 anchors.verticalCenter: parent.verticalCenter

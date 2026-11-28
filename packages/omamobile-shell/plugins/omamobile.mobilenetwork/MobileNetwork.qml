@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import "../omamobile.bar" as CellParts
 import qs.Commons as Commons
 import qs.Ui
 import "MobileNetworkModel.js" as Model
@@ -303,8 +304,19 @@ Item {
               Text {
                 id: bigGlyph
                 textFormat: Text.PlainText
-                text: root.page.state === "ready" ? ["󰞃", "󰢼", "󰢽", "󰢾", "󰣺"][Math.max(0, root.page.signalBars)] : "󰞃"
-                color: root.page.state === "ready" ? Commons.Color.accent : root.foreground
+                readonly property string icon: "cell-bars:" + (root.page.state === "ready" ? Math.max(0, Math.min(4, root.page.signalBars)) : 0)
+                // The bars are drawn (CellBars.qml, the font has no four-bar set); a
+                // transparent glyph keeps the slot's size.
+                readonly property bool cellBars: bigGlyph.icon.indexOf("cell-bars:") === 0
+                text: cellBars ? String.fromCodePoint(0xF001D) : bigGlyph.icon
+                color: cellBars ? "transparent" : (root.page.state === "ready" ? Commons.Color.accent : root.foreground)
+                CellParts.CellBars {
+                  anchors.centerIn: parent
+                  visible: parent.cellBars
+                  level: parent.cellBars ? (parseInt(bigGlyph.icon.slice(10), 10) || 0) : 0
+                  color: (root.page.state === "ready" ? Commons.Color.accent : root.foreground)
+                  size: parent.font.pixelSize * 0.74
+                }
                 opacity: root.page.state === "ready" ? 1 : 0.6
                 font.family: Style.font.family
                 font.pixelSize: Style.font.iconLarge * 1.5
@@ -344,7 +356,7 @@ Item {
             InfoRow {
               width: parent.width
               visible: root.page.state === "ready"
-              glyph: "󰣺"
+              glyph: "cell-bars:" + Math.max(0, Math.min(4, root.page.signalBars))
               text: "Signal: " + (root.page.signal || "")
             }
 
@@ -685,8 +697,18 @@ Item {
     Text {
       id: infoGlyph
       textFormat: Text.PlainText
-      text: infoItem.glyph
-      color: infoItem.urgent ? Commons.Color.urgent : infoItem.foreground
+      // The bars are drawn (CellBars.qml, the font has no four-bar set); a
+      // transparent glyph keeps the slot's size.
+      readonly property bool cellBars: infoItem.glyph.indexOf("cell-bars:") === 0
+      text: cellBars ? String.fromCodePoint(0xF001D) : infoItem.glyph
+      color: cellBars ? "transparent" : (infoItem.urgent ? Commons.Color.urgent : infoItem.foreground)
+      CellParts.CellBars {
+        anchors.centerIn: parent
+        visible: parent.cellBars
+        level: parent.cellBars ? (parseInt(infoItem.glyph.slice(10), 10) || 0) : 0
+        color: (infoItem.urgent ? Commons.Color.urgent : infoItem.foreground)
+        size: parent.font.pixelSize * 0.74
+      }
       font.family: Style.font.family
       font.pixelSize: Style.font.iconLarge
     }

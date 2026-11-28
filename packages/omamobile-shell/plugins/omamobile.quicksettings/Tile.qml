@@ -4,6 +4,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "Readable.js" as Readable
+import "../omamobile.bar" as CellParts
 
 // One quick-settings toggle: glyph, name and a one-line status, sized for a
 // thumb. Active tiles take the theme's selected fill and accent border; tiles
@@ -61,8 +62,18 @@ BorderSurface {
     width: Style.font.display
     horizontalAlignment: Text.AlignHCenter
     textFormat: Text.PlainText
-    text: root.icon
-    color: root.active ? root.accent : root.foreground
+    // The bars are drawn (CellBars.qml, the font has no four-bar set); a
+    // transparent glyph keeps the slot's size.
+    readonly property bool cellBars: root.icon.indexOf("cell-bars:") === 0
+    text: cellBars ? String.fromCodePoint(0xF001D) : root.icon
+    color: cellBars ? "transparent" : (root.active ? root.accent : root.foreground)
+    CellParts.CellBars {
+      anchors.centerIn: parent
+      visible: parent.cellBars
+      level: parent.cellBars ? (parseInt(root.icon.slice(10), 10) || 0) : 0
+      color: (root.active ? root.accent : root.foreground)
+      size: parent.font.pixelSize * 0.74
+    }
     opacity: root._dim
     font.family: Style.font.family
     font.pixelSize: Style.font.display

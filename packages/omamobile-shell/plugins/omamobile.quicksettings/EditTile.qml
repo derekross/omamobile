@@ -4,6 +4,7 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "Readable.js" as Readable
+import "../omamobile.bar" as CellParts
 
 // A tile in the quick settings' edit mode: glyph and name, with a badge in
 // the corner that says what a tap does (− removes from the sheet, + adds
@@ -41,8 +42,18 @@ BorderSurface {
       width: parent.width
       horizontalAlignment: Text.AlignHCenter
       textFormat: Text.PlainText
-      text: root.icon
-      color: root.foreground
+      // The bars are drawn (CellBars.qml, the font has no four-bar set); a
+      // transparent glyph keeps the slot's size.
+      readonly property bool cellBars: root.icon.indexOf("cell-bars:") === 0
+      text: cellBars ? String.fromCodePoint(0xF001D) : root.icon
+      color: cellBars ? "transparent" : root.foreground
+      CellParts.CellBars {
+        anchors.centerIn: parent
+        visible: parent.cellBars
+        level: parent.cellBars ? (parseInt(root.icon.slice(10), 10) || 0) : 0
+        color: root.foreground
+        size: parent.font.pixelSize * 0.74
+      }
       font.family: Style.font.family
       font.pixelSize: Style.font.iconLarge
     }

@@ -120,19 +120,25 @@ test("pages split by eight and keep one empty page for an empty layout", () => {
   assert.deepStrictEqual(M.pages(["wifi", "dnd", "mic"], 2), [["wifi", "dnd"], ["mic"]])
 })
 
-test("the Mobile data icon shows bars, crossed out only with no modem, data off or no network", () => {
+test("the Mobile data icon is the bar's cellular symbols and no other: empty bars with no modem or no signal, else filled bars", () => {
   const S = require(path.join(__dirname, "../plugins/omamobile.bar/StatusModel.js"))
-  const crossed = String.fromCodePoint(0xF0783)
-  assert.strictEqual(M.dataIcon(false, false, "80"), crossed, "no modem")
-  assert.strictEqual(M.dataIcon(true, false, "80"), crossed, "data off")
-  assert.strictEqual(M.dataIcon(true, true, "-1"), crossed, "no network")
-  assert.strictEqual(M.dataIcon(true, true, undefined), crossed, "an older probe without data_signal")
-  assert.strictEqual(M.dataIcon(true, true, "junk"), crossed, "garbage")
-  assert.strictEqual(M.dataIcon(true, true, "0"), String.fromCodePoint(0xF08BF), "registered, no reading: empty bars")
+  // The owner's rule (2026-11-27): no crossed-out or other cellular symbol
+  // without his say-so. Data off has none of its own: the tile's off state says it.
+  const empty = "cell-bars:0"   // four bars, none filled (omamobile.bar/CellBars.qml draws them)
+  const allowed = [empty, "cell-bars:1", "cell-bars:2", "cell-bars:3", "cell-bars:4"]
+  assert.strictEqual(M.dataIcon(false, false, "80"), empty, "no modem")
+  assert.strictEqual(M.dataIcon(true, false, "80"), S.cellularIcon(80), "data off: the bars as they are")
+  assert.strictEqual(M.dataIcon(true, true, "-1"), empty, "no network")
+  assert.strictEqual(M.dataIcon(true, true, undefined), empty, "an older probe without data_signal")
+  assert.strictEqual(M.dataIcon(true, true, "junk"), empty, "garbage")
+  assert.strictEqual(M.dataIcon(true, true, "0"), empty, "registered, no reading: empty bars")
   // The same bars as the status bar's cellular icon, at every strength.
-  for (let s = 0; s <= 100; s++) assert.strictEqual(M.dataIcon(true, true, String(s)), S.cellularIcon(s), `strength ${s}`)
+  for (let s = 0; s <= 100; s++) {
+    assert.strictEqual(M.dataIcon(true, true, String(s)), S.cellularIcon(s), `strength ${s}`)
+    for (const [a, e] of [[true, true], [true, false], [false, true], [false, false]])
+      assert.ok(allowed.includes(M.dataIcon(a, e, String(s))), `only the allowed symbols at ${s}`)
+  }
   assert.strictEqual(M.dataIcon(true, true, "250"), S.cellularIcon(100), "capped")
-  assert.notStrictEqual(M.dataIcon(true, true, "100"), crossed)
   const qml = fs.readFileSync(path.join(__dirname, "../plugins/omamobile.quicksettings/QuickSettings.qml"), "utf8")
   assert.ok(/icon: TilesModel\.dataIcon\(available, enabled, root\.probed\.data_signal\)/.test(qml), "the tile uses it")
 })
