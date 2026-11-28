@@ -22,6 +22,10 @@ Panel {
   property string glyph: ""
   property var modem: ({})
   property bool dataOn: false
+  // The data service is wanted but not up: systemd is starting it, or
+  // starting it again after it failed (a reconnect that brought no IPv4
+  // address, say). That is data on and not connected, never "off".
+  property bool dataTrying: false
   // The radio switch: the state sitd publishes lags the command by a few
   // seconds, so the switch shows what was asked until the state agrees.
   property bool radioBusy: false
@@ -111,6 +115,7 @@ Panel {
     if (radioBusy && radioWant) return "Searching"
     if (!registered) return "Searching"
     // As Omarchy's Wi-Fi card says "Not connected" with its switch off.
+    if (!dataOn && dataTrying) return "No data connection"
     if (!dataOn) return modem.registration === "roaming" ? "Roaming · cellular data off" : "Cellular data off"
     return modem.registration === "roaming" ? "Roaming" : "Connected"
   }
@@ -187,8 +192,14 @@ Panel {
 
   Process {
     id: dataProc
-    command: ["systemctl", "is-active", "--quiet", "omamobile-sit-data.service"]
-    onExited: function(code) { root.dataOn = code === 0 }
+    command: ["systemctl", "is-active", "omamobile-sit-data.service"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var state = String(text || "").trim()
+        root.dataOn = state === "active"
+        root.dataTrying = state === "activating"
+      }
+    }
   }
 
   Process {
@@ -380,7 +391,7 @@ Panel {
           InfoLabel { text: "Texts" }
           DetailValue { text: root.yesNo(modem.sms) }
           InfoLabel { text: "Cellular data" }
-          DetailValue { text: root.dataOn ? (modem.data ? "On" : "Connecting") : "Off" }
+          DetailValue { text: root.dataOn ? (modem.data ? "On" : "Connecting") : (root.dataTrying ? "Connecting" : "Off") }
 
           InfoLabel { text: Commons.I18n.t("network.ping") }
           DetailValue {
