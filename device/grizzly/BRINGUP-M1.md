@@ -9187,6 +9187,43 @@ the Mac detect Fastboot again. Stock D1 A then completed boot
 with enforcing verity and the original VBMeta digest. Take a
 fresh guarded NV backup before another slot B trial.
 
+###### Attended corrected stock D1 BE read trace
+
+On 2026-11-28 the rescue took a fresh nine-partition NV backup.
+The Mac independently verified all SHA-256 hashes, byte counts
+and private permissions. The five corrected images passed
+staging and full 64 MiB vendor boot readback. The corrected
+fixture booted once on B. Its NV guard passed before tracing
+armed with both DSI hosts and both PHYs disabled.
+
+| Stock DC cycle | Final supplier ON reply (s) | 30 reads of `0x0f6d4004` (s) | Write `0` to `0x0f680248` (s) | RPM_ACTIVE (s) |
+| --- | ---: | --- | ---: | ---: |
+| First | 4.262384 | 4.262409–4.262491 | 4.262495 | 4.262510 |
+| Second | 4.303365 | 4.303371–4.303445 | 4.303446 | 4.303451 |
+
+All 60 resume reads returned `0x4320`. In the first cycle,
+wrapper and BE ON completed before DSI0, DSI1, FE0 and FE1 ON.
+The second cycle reused the wrapper and BE votes while renewing
+the four child votes. Both suspend paths returned `0` from the
+BE IRQ enable word `0x0f680004` before writing `0x0f` to
+`0x0f680248`. The second suspend then released BE and wrapper
+at 4.341246 s and 4.341394 s.
+
+Ramoops and `SYSTEM_LAST_KMSG` agree on all 62 reads, four
+isolation writes and returns, 20 runtime-PM events, and 22
+MBFS request/reply pairs. There were no samples of the
+frame-start pending word `0x0f680008`, its overflow latch, or
+an external reset acknowledgment. The trace confirms stock
+can read the BE aperture before the de-isolation write with
+the observed supplier votes in place. It leaves BE-only
+mainline access unqualified.
+
+The NV guard remained in effect. The timed restart was requested
+at 90.875 s. After a USB-C reconnect, the Mac detected Fastboot
+and selected A. Stock D1 completed boot with enforcing verity
+and the original VBMeta digest. Take a fresh guarded NV backup
+before the next slot B trial.
+
 ###### Mainline DSI0 readiness after stock connector registration
 
 The mainline prerequisite fixture at kernel
