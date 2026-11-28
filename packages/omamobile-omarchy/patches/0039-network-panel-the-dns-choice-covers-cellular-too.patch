@@ -1,0 +1,23 @@
+# Network panel: the DNS provider's heading says it covers cellular too.
+# Omarchy's DNS setting is one choice for the whole system, but its pills sit
+# on the Wi-Fi card under "DNS PROVIDER", and on a phone that reads as Wi-Fi's
+# own setting: with Wi-Fi off there was nothing to say that cellular follows
+# the same choice, or where to change it. The heading names both; the
+# cellular card (omamobile-shell) points back here.
+#
+# Against Omarchy 4.5.0-3.
+
+diff --git i/shell/plugins/panels/network/Panel.qml w/shell/plugins/panels/network/Panel.qml
+--- i/shell/plugins/panels/network/Panel.qml
++++ w/shell/plugins/panels/network/Panel.qml
+@@ -1579,7 +1579,9 @@
+         spacing: Style.space(10)
+ 
+         PanelSectionHeader {
+-          text: Commons.I18n.t("network.dnsProvider")
++          // One choice for every connection, cellular included: say so,
++          // since the pills sit on the Wi-Fi card.
++          text: Commons.I18n.t("network.dnsProvider") + " · WI-FI AND CELLULAR"
+           foreground: root.bar.foreground
+           fontFamily: root.bar.fontFamily
+         }
