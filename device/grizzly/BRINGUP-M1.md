@@ -9309,11 +9309,40 @@ The three reused factory images match byte for byte, and
 only Grizzly B0 entry 19 changed in the 55-entry DTBO.
 The bundle's `SHA256SUMS` digest is
 `c5fd99f421c1e785e102b0e2bd6b29f6c82b86129ede246404a5d3e610622418`.
-The hardware access remains untested. A valid mux read
-would qualify only this word in the recorded vote state.
-It would leave frame-start status and external reset
-coverage open. A later hardware trial requires a fresh
-guarded NV backup and the stock A return plan.
+
+###### Attended stock D1 wrapper-plus-BE mux trial
+
+On 2026-11-28, the first backup-rescue boot did not expose
+its USB reader. A manual return to Fastboot allowed the
+same verified rescue to run. The Mac saved nine private
+partition images totaling 3,392,151,552 bytes and verified
+them against separate phone-side reads and a local checksum
+pass. Slot B's five fixture images passed staging, including
+a byte-for-byte readback of `vendor_boot_b`, before the
+single BE-only boot.
+
+The retained console and `SYSTEM_LAST_KMSG` agree. The NV
+guard covered five parents and nine targets. All seven AP
+display votes were zero before arming. At the read checkpoint
+wrapper and BE were 1 while DSI0, DSI1, FE0, FE1 and DP0
+were 0. The sampler confirmed the frame-start SGIA leaf
+was masked, then its single read of `0x0f6d4004` returned
+`0x4320` at kernel log time 4.725618 s. All seven votes
+returned to zero after module removal. The DSI0 host and
+PHY TX paths stayed disabled.
+
+The read matches the previous stock mux value with the
+larger supplier set. It establishes that the two AP votes
+were sufficient for this word in the tested stock boot.
+Other firmware clients' votes, physical sibling power,
+frame-start status access and external reset remain
+unverified. Keep the frame-start IRQ masked and the DSI0
+host and PHY TX read guards in place.
+
+The fixture requested its timed restart at 90.889393 s.
+After the USB reconnect, Fastboot confirmed slot A and
+stock D1 finished booting with enforcing verity and the
+original VBMeta digest.
 
 ###### Mainline DSI0 readiness after stock connector registration
 
