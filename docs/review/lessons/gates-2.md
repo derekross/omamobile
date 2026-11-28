@@ -3,6 +3,17 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-890. A tool that gains a delete in a shared cache or state folder is
+  checked against every test that runs the real tool without redirecting that
+  folder.** #875 added a removal from `$ALARM_CACHE/pkg`;
+  `tests/pinned-packages` and `tests/local-builds` run the real
+  `tools/build-packages` with `ALARM_CACHE` unset, so they reach the user's
+  real cache with a tool that deletes there, and only the fixture names keep
+  it harmless. *Check:* `git grep -ln '<tool>' tests packages/*/test`, then in
+  each hit look for the variable that moves the folder (`ALARM_CACHE=`,
+  `HOME=`); before running such a suite in review, note the real folder's
+  mtime and compare it afterwards. Extends L-454 and L-681. *From:* #875,
+  round 61, 2026-11-18.
 - **L-886. `tools/pr-check BASE HEAD` run from another directory checks the
   tool's own repository.** Called by its path from inside a review worktree it
   printed "ok - no commits to check against origin/main" for a head with one
@@ -391,14 +402,3 @@ Part of [the review lessons](../LESSONS.md), which says how they are used and ho
   release and `diff -r` the trees: empty means the earlier review (and any
   test of the earlier build) still applies (L-45 for package patches).
   *From:* #32, round 2.
-- **L-70. A gate's "N device trees" can leave out a new overlay.** Neither
-  `kernel-pr-check` nor CI built `.dtso` files until kernel #32. *Check:*
-  compile every touched overlay with `-@`, apply it to its base with
-  `fdtoverlay`, and `dt-validate` the result (`kernel-pr-check --build` now
-  does this). *From:* kernel #32.
-- **L-73. Gate a PR on its merge, not only on its head, when another PR
-  landed in the same files after it branched.** CI checks out the PR head,
-  so #20 was never built with #27's S2MPG12 changes. *Check:* `git
-  merge-tree --write-tree`, `git commit-tree`, then `kernel-pr-check
-  --build` on that commit; after a batch of merges, gate the whole new
-  range once. *From:* kernel #20, round 2.
