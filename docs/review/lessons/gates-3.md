@@ -3,6 +3,17 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-70. A gate's "N device trees" can leave out a new overlay.** Neither
+  `kernel-pr-check` nor CI built `.dtso` files until kernel #32. *Check:*
+  compile every touched overlay with `-@`, apply it to its base with
+  `fdtoverlay`, and `dt-validate` the result (`kernel-pr-check --build` now
+  does this). *From:* kernel #32.
+- **L-73. Gate a PR on its merge, not only on its head, when another PR
+  landed in the same files after it branched.** CI checks out the PR head,
+  so #20 was never built with #27's S2MPG12 changes. *Check:* `git
+  merge-tree --write-tree`, `git commit-tree`, then `kernel-pr-check
+  --build` on that commit; after a batch of merges, gate the whole new
+  range once. *From:* kernel #20, round 2.
 - **L-80. checkpatch reported every compatible a PR documents itself as
   undocumented, and showed warnings only as a count.** It read bindings
   from the clone's checked-out tree, not the commit under test. Fixed:

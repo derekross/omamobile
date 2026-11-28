@@ -3,6 +3,7 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-733. A script that changes a safety setting sets its restore trap first, and every early `exit` is read against what has already been changed.** #659 turned the runtime watchdog off and `panic_on_rcu_stall` on 20 lines above a refusal and 35 lines above `trap restore EXIT`, and its restore put back one of the five switches. *Check:* list each write to `/proc/sys`, `/sys/power`, tracefs or systemd's manager properties with its line, then the line of the trap and of every `exit` between them, and tick each write off in the restore function. Extends L-613 and L-468. *From:* #659, round 51, 2026-11-11.
 - **L-716. A check whose input can fail to be read is walked for what the
   failed read decides.** #596's `cpio -it 2>/dev/null | grep -c … || true`
   read a broken archive as "no keys" (key appended, then flashed) and a late
@@ -397,12 +398,3 @@ Part of [the review lessons](../LESSONS.md), which says how they are used and ho
   at or above 234 and outside `Documentation/admin-guide/devices.txt`'s fixed
   list gets a path-based rule, a value generated at start, or an update plan.
   *From:* #493, round 44, 2026-11-08.
-- **L-571. An allow line added because "Waydroid binds it" is checked for what
-  the node lets the container do to the host.** #493's `/dev/uhid` creates HID
-  devices that the host compositor reads, which is a way to inject input into
-  the host session; Android booted without it and logged nothing about it.
-  *Check:* for each new `lxc.cgroup2.devices.allow`, name the host object that
-  opening the node creates or reaches (uhid and uinput are host input, `kvm`
-  host CPU state, `mem` and `port` host memory and I/O), and ask for a failing
-  Android feature without it before it goes in. Extends L-540 and L-454.
-  *From:* #493, round 45, 2026-11-08.
