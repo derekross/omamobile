@@ -1267,9 +1267,12 @@ Item {
       }
     }
 
+    // How long the finger rests before recent apps open. At 350 ms the cards
+    // came half a second after the finger stopped, with nothing on screen
+    // meanwhile; 200 is still longer than a swipe home's slowest moment.
     Timer {
       id: hold
-      interval: 350
+      interval: 200
       onTriggered: {
         if (!swipe.active || swipe.recents || root.opened) return
         swipe.recents = true
