@@ -3,6 +3,15 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-571. An allow line added because "Waydroid binds it" is checked for what
+  the node lets the container do to the host.** #493's `/dev/uhid` creates HID
+  devices that the host compositor reads, which is a way to inject input into
+  the host session; Android booted without it and logged nothing about it.
+  *Check:* for each new `lxc.cgroup2.devices.allow`, name the host object that
+  opening the node creates or reaches (uhid and uinput are host input, `kvm`
+  host CPU state, `mem` and `port` host memory and I/O), and ask for a failing
+  Android feature without it before it goes in. Extends L-540 and L-454.
+  *From:* #493, round 45, 2026-11-08.
 - **L-572. A lock added to an input handler is checked for what a holder that
   hangs does to every later press.** #508's `flock` without `-w` made a stuck
   short-press action freeze the power key for the session, where main would

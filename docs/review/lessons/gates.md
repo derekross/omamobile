@@ -3,6 +3,15 @@
 
 Part of [the review lessons](../LESSONS.md), which says how they are used and how they grow.
 
+- **L-1239. A test said to "fail on the old layout" is run against the old
+  structure with the new test's object names added, so it fails on the bug and
+  not on a missing name.** #1030's Credits test, run against the old layout
+  (the intro in the `ListView`'s `header:`) with `objectName: "creditsIntro"`
+  given to the header label, failed at `intro->y() >= 0`: the header sits at
+  a negative y in the list's content, which is the cut-off itself. Without the
+  name it would only have failed on "no such object". *Check:* rebuild the
+  old layout with the new test's object names, run the test, and read which
+  line fails. Extends L-946 and L-970. *From:* #1030, round 70, 2026-11-28.
 - **L-1220. A rebuild-only pkgrel bump is shown resolvable on today's indexes,
   and its version compared with every repository's copy, because a "sorts
   above" rationale goes stale.** *Check:* a fake-root `pacman -Sp` on today's
@@ -402,14 +411,3 @@ Part of [the review lessons](../LESSONS.md), which says how they are used and ho
   where the verdict is about another file, ask for a compare (`zstd -dc A |
   cmp - B` needs no disk) and a fixture case for it. Extends L-422, L-635 and
   L-684. *From:* #876, round 61, 2026-11-18.
-- **L-890. A tool that gains a delete in a shared cache or state folder is
-  checked against every test that runs the real tool without redirecting that
-  folder.** #875 added a removal from `$ALARM_CACHE/pkg`;
-  `tests/pinned-packages` and `tests/local-builds` run the real
-  `tools/build-packages` with `ALARM_CACHE` unset, so they reach the user's
-  real cache with a tool that deletes there, and only the fixture names keep
-  it harmless. *Check:* `git grep -ln '<tool>' tests packages/*/test`, then in
-  each hit look for the variable that moves the folder (`ALARM_CACHE=`,
-  `HOME=`); before running such a suite in review, note the real folder's
-  mtime and compare it afterwards. Extends L-454 and L-681. *From:* #875,
-  round 61, 2026-11-18.
