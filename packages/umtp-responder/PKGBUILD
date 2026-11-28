@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: MIT
+# umtp-responder: a small MTP responder on the USB gadget's FunctionFS, the
+# file transfer that omamobile-usb offers a computer once the owner allows it
+# (a computer's file manager sees the phone as a media device). Not in Arch
+# Linux ARM's repositories or the AUR, so we build it. Built with systemd's
+# readiness notice (SYSTEMD=1), so its unit is ready once the USB descriptors
+# are written and the gadget can be bound. No configuration file is shipped:
+# omamobile-usb writes one per session (/run/omamobile/usb/umtprd.conf) and
+# runs the daemon as the session's user.
+#
+# Source: upstream's 1.8.1 release tarball, pinned by sha256, with one
+# change: its command queue asks for 10 messages, not 20, which is all an
+# unprivileged user may have (fs.mqueue.msg_max), so it runs as the user.
+pkgname=umtp-responder
+pkgver=1.8.1
+pkgrel=2
+pkgdesc="Lightweight USB Media Transfer Protocol (MTP) responder daemon"
+arch=(aarch64)
+url="https://github.com/viveris/uMTP-Responder"
+license=('GPL-3.0-or-later')
+depends=(glibc systemd-libs)
+makedepends=(systemd)
+source=("$pkgname-$pkgver.tar.gz::https://github.com/viveris/uMTP-Responder/archive/refs/tags/umtprd-$pkgver.tar.gz"
+        0001-msgqueue-fit-an-unprivileged-user-s-limit.patch)
+sha256sums=('6f57f61a1993059bcdd5f598d8c2a3888991497ef42ba3594947f00bd7746b1f'
+            '03e1702a9eb2b9c92faa00aba981891b3fd48d1a7fe591a696f450087809d307')
+
+prepare() {
+  cd "uMTP-Responder-umtprd-$pkgver"
+  patch -Np1 -i ../0001-msgqueue-fit-an-unprivileged-user-s-limit.patch
+}
+
+build() {
+  cd "uMTP-Responder-umtprd-$pkgver"
+  # The Makefile strips the binary with -s; makepkg strips (and keeps
+  # debug info apart) itself.
+  make SYSTEMD=1 LDFLAGS="$LDFLAGS -lpthread -lrt -lsystemd"
+}
+
+package() {
+  cd "uMTP-Responder-umtprd-$pkgver"
+  install -Dm755 umtprd "$pkgdir/usr/bin/umtprd"
+  install -Dm644 conf/umtprd.conf "$pkgdir/usr/share/doc/$pkgname/umtprd.conf.example"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
