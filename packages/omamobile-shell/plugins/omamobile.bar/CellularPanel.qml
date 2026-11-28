@@ -177,7 +177,7 @@ Panel {
   // With DHCP chosen the network's own servers answer, here the carrier's.
   function dnsText() {
     if (dnsProvider === "") return "--"
-    return (dnsProvider === "DHCP" ? "The carrier's" : dnsProvider) + ", set on the Wi-Fi card"
+    return (dnsProvider === "DHCP" ? "The carrier's" : dnsProvider) + ", set on Wi-Fi card"
   }
 
   // The Wi-Fi card's own formats (Omarchy's network Model.js)
