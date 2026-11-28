@@ -132,18 +132,51 @@ class Resolver:
             self.owned = None
 
 
+def own_servers():
+    """Whether systemd-resolved has DNS servers of its own, for every link:
+    Omarchy's DNS setting writes them (Cloudflare, Google, Custom), as does a
+    resolved.conf edited by hand. With them the owner has chosen who answers."""
+    out = subprocess.run(['resolvectl', 'dns'], capture_output=True, text=True, timeout=20).stdout
+    for line in out.splitlines():
+        if line.startswith('Global:'):
+            return bool(line.split(':', 1)[1].strip())
+    return False
+
+
 class ResolvedLink:
     """The same with systemd-resolved: the device's DNS servers are set once and
-    the link is the default DNS route only while cellular is the only way out."""
-    def __init__(self, servers, dev):
+    the link is the default DNS route only while cellular is the only way out
+    and resolved has no servers of its own. resolved asks a default-route
+    link's servers as well as its own, so with a DNS provider chosen every
+    lookup on cellular also went to the carrier, unencrypted. The choice can
+    change at any time, so it is read again every CHECK seconds on cellular."""
+    CHECK = 10
+
+    def __init__(self, servers, dev, chosen=own_servers, clock=time.monotonic):
         self.dev = dev
+        self.chosen = chosen
+        self.clock = clock
         run('resolvectl', 'dns', dev, *servers)
-        self.cellular = None
+        self.route = None
+        self.own = False
+        self.checked = None
+        self.said = None
 
     def update(self, cellular, servers):
-        if cellular != self.cellular:
-            run('resolvectl', 'default-route', self.dev, 'yes' if cellular else 'no')
-            self.cellular = cellular
+        if not cellular:
+            self.checked = None
+        elif self.checked is None or self.clock() - self.checked >= self.CHECK:
+            self.own = bool(self.chosen())
+            self.checked = self.clock()
+        route = cellular and not self.own
+        if route != self.route:
+            run('resolvectl', 'default-route', self.dev, 'yes' if route else 'no')
+            self.route = route
+        said = route if cellular else None
+        if said != self.said:
+            if cellular:
+                print('DNS on cellular:', "the carrier's servers" if route else "the system's own servers; the carrier's are not asked", flush=True)
+            self.said = said
 
     def restore(self):
         subprocess.run(['resolvectl', 'revert', self.dev], capture_output=True, timeout=20)

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import data_network
-from data_network import Resolver, SleepHold, configuration, counters, guarded, looks_silent, sleep_signal
+from data_network import ResolvedLink, Resolver, SleepHold, configuration, counters, guarded, looks_silent, sleep_signal
 
 class ResolverTests(unittest.TestCase):
     def test_fallback_restoration_preserves_new_wifi_dns(self):
@@ -19,6 +19,58 @@ class ResolverTests(unittest.TestCase):
     def test_rejects_inactive_or_wrong_bearer(self):
         for data in (b'',bytes(132),b'\0\0\2\1\3'+bytes(127)):
             with self.assertRaises(ValueError): configuration(data)
+
+class ResolvedLinkTests(unittest.TestCase):
+    def link(self, own, clock):
+        self.calls = []
+        with patch.object(data_network, 'run', lambda *a: self.calls.append(a)):
+            link = ResolvedLink(['192.0.2.53'], 'rmnet0', chosen=lambda: own[0], clock=lambda: clock[0])
+        self.assertEqual(self.calls, [('resolvectl', 'dns', 'rmnet0', '192.0.2.53')])
+        self.calls.clear()
+        return link
+
+    def routes(self):
+        return [a[-1] for a in self.calls if a[:2] == ('resolvectl', 'default-route')]
+
+    def test_without_servers_of_its_own_the_carriers_answer_on_cellular_alone(self):
+        own, clock = [False], [0.0]
+        link = self.link(own, clock)
+        with patch.object(data_network, 'run', lambda *a: self.calls.append(a)), patch('builtins.print'):
+            link.update(False, []); link.update(True, []); link.update(True, []); link.update(False, [])
+        self.assertEqual(self.routes(), ['no', 'yes', 'no'])
+
+    def test_with_a_dns_provider_chosen_the_carriers_servers_are_never_asked(self):
+        own, clock = [True], [0.0]
+        link = self.link(own, clock)
+        with patch.object(data_network, 'run', lambda *a: self.calls.append(a)), patch('builtins.print'):
+            link.update(False, []); link.update(True, []); link.update(True, []); link.update(False, [])
+        self.assertEqual(self.routes(), ['no'])
+
+    def test_a_choice_changed_on_cellular_is_followed_at_the_next_check(self):
+        own, clock = [False], [0.0]
+        link = self.link(own, clock)
+        with patch.object(data_network, 'run', lambda *a: self.calls.append(a)), patch('builtins.print'):
+            link.update(True, [])
+            own[0] = True; clock[0] = ResolvedLink.CHECK - 1
+            link.update(True, [])
+            self.assertEqual(self.routes(), ['yes'])
+            clock[0] = ResolvedLink.CHECK
+            link.update(True, [])
+            self.assertEqual(self.routes(), ['yes', 'no'])
+            own[0] = False; clock[0] = 2 * ResolvedLink.CHECK
+            link.update(True, [])
+        self.assertEqual(self.routes(), ['yes', 'no', 'yes'])
+
+    def test_resolved_own_servers_are_read_from_its_global_line(self):
+        def out(text):
+            return patch.object(data_network.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=text))
+        with out('Global: 192.0.2.1#dns.example 192.0.2.2#dns.example\nLink 6 (rmnet0): 192.0.2.53\n'):
+            self.assertTrue(data_network.own_servers())
+        with out('Global:\nLink 6 (rmnet0): 192.0.2.53\n'):
+            self.assertFalse(data_network.own_servers())
+        with out(''):
+            self.assertFalse(data_network.own_servers())
+
 
 class RouteTests(unittest.TestCase):
     def test_only_logind_sleep_announcements_count(self):
