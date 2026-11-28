@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+post_install() {
+  systemctl daemon-reload 2>/dev/null || true
+  echo "omamobile-usb: starts at the next boot (or: systemctl start omamobile-usb)."
+  echo "  From then on a locked phone has no USB data, SSH over USB included, and an"
+  echo "  unlocked one asks before a computer gets SSH & network or file transfer."
+  echo "  Bring-up phones: LOCKED=keep in /etc/omamobile/usb.conf keeps USB while locked."
+}
+post_upgrade() {
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl try-restart omamobile-usb.service 2>/dev/null || true
+}
+pre_remove() {
+  # Its stop puts the USB network back
+  systemctl stop omamobile-usb.service 2>/dev/null || true
+}

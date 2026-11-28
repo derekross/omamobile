@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+# Maintainer: Derek Ross <derekross@gmail.com>
+pkgname=omamobile-usb
+pkgver=$(cat "${startdir:-.}/version")
+pkgrel=1
+pkgdesc="Omamobile USB: no USB data while locked; a computer gets SSH & network or file transfer (MTP) once the owner allows it"
+arch=(aarch64)
+url="https://github.com/derekross/omamobile"
+license=(MIT)
+depends=(bash systemd glib2 libnotify inotify-tools procps-ng util-linux coreutils grep sed umtp-responder)
+backup=(etc/omamobile/usb.conf)
+install=omamobile-usb.install
+
+check() {
+  "$startdir/test/all"
+}
+
+package() {
+  "$startdir/install" "$pkgdir"
+}

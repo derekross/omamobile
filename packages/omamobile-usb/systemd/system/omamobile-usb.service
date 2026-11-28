@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+# The phone's USB data follows the lock (omamobile-usbd): none while locked,
+# charging only for a computer until the owner chooses SSH & network, file
+# transfer or both in a notification. Before the first session the gadget
+# stays as the initramfs set it up. Stopping this unit puts the USB network
+# back; to keep it off at boot: systemctl mask omamobile-usb (disable doesn't
+# remove the package's wants link).
+[Unit]
+Description=Omamobile USB data follows the lock
+After=systemd-logind.service
+Wants=systemd-logind.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/omamobile/omamobile-usbd
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
