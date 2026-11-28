@@ -9224,6 +9224,50 @@ and selected A. Stock D1 completed boot with enforcing verity
 and the original VBMeta digest. Take a fresh guarded NV backup
 before the next slot B trial.
 
+###### Offline supplier scope for the BE resume read
+
+Exact D1 `vs_drm.ko` writes FE/BE offset `0xd4004` from
+`online_trigger` at `0x33ec8` and `0x33f94` after applying
+`panel_output_mux`. The getter and setter at `0x37890` and
+`0x378dc` decode four three-bit selector fields at bits 0,
+4, 8 and 12. The observed `0x4320` decodes to 0, 2, 3 and 4.
+The word at AP `0x0f6d4004` belongs to the DC's output mux.
+Stock seeds its software copy with `0x4320` during setup
+and reset cleanup. Exact D1 ABL also constructs the mux
+fields and writes the same relative offset from helper
+`0xd7148`. That helper supplies no reduced-supplier read
+witness. The mux data provides no clock or external reset status.
+
+The first stock resume confirmed wrapper `0x08` and BE
+`0x200` ON, followed by DSI0 `0x203`, DSI1 `0x204`,
+FE0 `0x201` and FE1 `0x202`. All 30 reads followed the
+FE1 ON reply. The second resume retained the parent
+votes and renewed the four child votes before any of its
+30 reads. The corrected trace captured no DP0 `0x205`
+request or reply. Its trace window did not establish a
+physical DP0 power state.
+
+The stock parent DC attaches DSI0, DSI1, FE0 and FE1 from
+its DT power-domain list as runtime-PM suppliers. The BE
+component has its own BE domain. The supplier links explain
+the observed sequencing even with DSI host and PHY nodes
+disabled. Neither burst exercised a reduced supplier set.
+The firmware tracks BE in PSM1, FE0 and FE1 in PSM2, and
+DSI0 and DSI1 in PSM3. Their ON callbacks can touch shared
+DPU request bits. The BE gate sampled by selector 4 is a
+separate clock cell from FE0 and FE1. Neither the shared
+request bits nor the static GC bridge permission identifies
+which child, if any, must be on for the mux bus to respond.
+
+The wrapper-plus-BE trial verified the selector 4 gate and
+masked IRQ binding while leaving the mux untouched. The stock
+trace establishes a working supplier set and the parent
+driver's software dependencies. It supplies no BE-only read
+witness and does not establish a minimal hardware vote set.
+Keep the mux and frame-start status reads disabled in mainline,
+the frame-start IRQ masked, and DSI0 host and PHY TX reads
+disabled. This audit used saved artifacts only.
+
 ###### Mainline DSI0 readiness after stock connector registration
 
 The mainline prerequisite fixture at kernel
