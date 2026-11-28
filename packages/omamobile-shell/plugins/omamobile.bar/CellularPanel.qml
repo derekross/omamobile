@@ -44,6 +44,8 @@ Panel {
   property string lookedUpCode: ""
   // The data link's own details (cell-stats.sh), while the card is open
   property var link: ({})
+  // Omarchy's DNS setting (the Wi-Fi card's pills): it covers cellular too
+  property string dnsProvider: ""
   // As the Wi-Fi card: rates from the change between two samples, ping as the
   // average of the last 5, packet loss over the last 24
   property var lastSample: null
@@ -138,7 +140,7 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (opened) { refresh(); return }
+    if (opened) { refresh(); if (!dnsProc.running) dnsProc.running = true; return }
     lastSample = null; downloadRate = 0; uploadRate = 0; pingSamples = []
   }
 
@@ -160,6 +162,22 @@ Panel {
         try { root.link = text.trim() ? JSON.parse(text) : ({}) } catch (e) { root.link = ({}) }
       }
     }
+  }
+
+  // What the Wi-Fi card's DNS pills read: "omarchy-dns" alone names the choice
+  Process {
+    id: dnsProc
+    command: ["omarchy-dns"]
+    stdout: StdioCollector {
+      onStreamFinished: root.dnsProvider = String(text || "").trim().split("\n")[0]
+    }
+  }
+
+  // The DNS line: who answers lookups on cellular, and where that is chosen.
+  // With DHCP chosen the network's own servers answer, here the carrier's.
+  function dnsText() {
+    if (dnsProvider === "") return "--"
+    return (dnsProvider === "DHCP" ? "The carrier's" : dnsProvider) + ", set on the Wi-Fi card"
   }
 
   // The Wi-Fi card's own formats (Omarchy's network Model.js)
@@ -375,47 +393,62 @@ Panel {
         // then the same rows and labels as Omarchy's Wi-Fi card (its grid,
         // two pairs a row, one on a narrow card as patch 0033 has it). "--"
         // until there is a sample.
-        GridLayout {
+        // The grid and the DNS line under it, spaced as one list
+        Column {
           visible: root.present
           width: parent.width
-          columns: panel.contentWidth < Style.space(380) ? 2 : 4
-          columnSpacing: Style.space(20)
-          rowSpacing: Style.spacing.labelGap
+          spacing: Style.spacing.labelGap
 
-          // What only a cellular link has comes first
-          InfoLabel { text: "Signal" }
-          DetailValue { text: root.registered ? root.signal + "%" : "--" }
-          InfoLabel { text: "Calls" }
-          DetailValue { text: root.yesNo(modem.voice) }
+          GridLayout {
+            width: parent.width
+            columns: panel.contentWidth < Style.space(380) ? 2 : 4
+            columnSpacing: Style.space(20)
+            rowSpacing: Style.spacing.labelGap
 
-          InfoLabel { text: "Texts" }
-          DetailValue { text: root.yesNo(modem.sms) }
-          InfoLabel { text: "Cellular data" }
-          DetailValue { text: root.dataOn ? (modem.data ? "On" : "Connecting") : (root.dataTrying ? "Connecting" : "Off") }
+            // What only a cellular link has comes first
+            InfoLabel { text: "Signal" }
+            DetailValue { text: root.registered ? root.signal + "%" : "--" }
+            InfoLabel { text: "Calls" }
+            DetailValue { text: root.yesNo(modem.voice) }
 
-          InfoLabel { text: Commons.I18n.t("network.ping") }
-          DetailValue {
-            text: root.linkUp ? root.formatPing(root.pingLatency) : "--"
-            color: root.hasPing && root.packetLoss > 0 ? root.bar.urgent : root.bar.foreground
+            InfoLabel { text: "Texts" }
+            DetailValue { text: root.yesNo(modem.sms) }
+            InfoLabel { text: "Cellular data" }
+            DetailValue { text: root.dataOn ? (modem.data ? "On" : "Connecting") : (root.dataTrying ? "Connecting" : "Off") }
+
+            InfoLabel { text: Commons.I18n.t("network.ping") }
+            DetailValue {
+              text: root.linkUp ? root.formatPing(root.pingLatency) : "--"
+              color: root.hasPing && root.packetLoss > 0 ? root.bar.urgent : root.bar.foreground
+            }
+            InfoLabel { text: Commons.I18n.t("network.packetLoss") }
+            DetailValue {
+              text: root.linkUp ? root.formatLoss(root.packetLoss) : "--"
+              color: root.hasPing && root.packetLoss > 0 ? root.bar.urgent : root.bar.foreground
+            }
+
+            InfoLabel { text: Commons.I18n.t("network.receiving") }
+            DetailValue { text: root.linkUp && root.lastSample ? root.formatRate(root.downloadRate) : "--" }
+            InfoLabel { text: Commons.I18n.t("network.sending") }
+            DetailValue { text: root.linkUp && root.lastSample ? root.formatRate(root.uploadRate) : "--" }
+
+            InfoLabel { text: Commons.I18n.t("network.downloaded") }
+            DetailValue { text: root.linkUp ? root.formatBytes(root.link.rx) : "--" }
+            InfoLabel { text: Commons.I18n.t("network.uploaded") }
+            DetailValue { text: root.linkUp ? root.formatBytes(root.link.tx) : "--" }
+
+            InfoLabel { text: Commons.I18n.t("network.ipAddress") }
+            DetailValue { text: root.linkUp ? root.link.address : "--"; copyable: root.linkUp }
           }
-          InfoLabel { text: Commons.I18n.t("network.packetLoss") }
-          DetailValue {
-            text: root.linkUp ? root.formatLoss(root.packetLoss) : "--"
-            color: root.hasPing && root.packetLoss > 0 ? root.bar.urgent : root.bar.foreground
+
+          // DNS is one setting for every connection, and its pills are on the
+          // Wi-Fi card: say so here, where nobody would look for it. Read-only.
+          RowLayout {
+            width: parent.width
+            spacing: Style.space(20)
+            InfoLabel { text: "DNS" }
+            DetailValue { text: root.dnsText(); elide: Text.ElideLeft }
           }
-
-          InfoLabel { text: Commons.I18n.t("network.receiving") }
-          DetailValue { text: root.linkUp && root.lastSample ? root.formatRate(root.downloadRate) : "--" }
-          InfoLabel { text: Commons.I18n.t("network.sending") }
-          DetailValue { text: root.linkUp && root.lastSample ? root.formatRate(root.uploadRate) : "--" }
-
-          InfoLabel { text: Commons.I18n.t("network.downloaded") }
-          DetailValue { text: root.linkUp ? root.formatBytes(root.link.rx) : "--" }
-          InfoLabel { text: Commons.I18n.t("network.uploaded") }
-          DetailValue { text: root.linkUp ? root.formatBytes(root.link.tx) : "--" }
-
-          InfoLabel { text: Commons.I18n.t("network.ipAddress") }
-          DetailValue { text: root.linkUp ? root.link.address : "--"; copyable: root.linkUp }
         }
       }
     }
